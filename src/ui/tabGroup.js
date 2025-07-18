@@ -156,7 +156,13 @@
             if (!util.deleteButtonIsSure(deleteBtn)) {
                 return;
             }
-            chrome.runtime.sendMessage({action: "deleteDomain", id: id});
+            chrome.runtime.sendMessage({action: "deleteDomain", id: id}, function(response) {
+                if (response && response.deleted) {
+                    console.log('Domain deleted successfully:', id);
+                } else {
+                    console.error('Failed to delete domain:', id);
+                }
+            });
             domain.css("transition", "none");
             domain.fadeOut(function() {
                 domain.remove();

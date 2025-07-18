@@ -70,4 +70,27 @@
             delete: deleteDomain
         };
     })();
+
+    // Settings storage using Chrome storage API
+    bgapp.settingsStorage = {
+        get: function(key) {
+            return new Promise((resolve) => {
+                chrome.storage.local.get([key], (result) => {
+                    resolve(result[key]);
+                });
+            });
+        },
+        
+        set: function(key, value) {
+            return new Promise((resolve) => {
+                chrome.storage.local.set({[key]: value}, resolve);
+            });
+        },
+        
+        getAll: function() {
+            return new Promise((resolve) => {
+                chrome.storage.local.get(null, resolve);
+            });
+        }
+    };
 }

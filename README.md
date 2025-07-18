@@ -1,34 +1,54 @@
-# Resource Override
+# Resource Override - Manifest V3
 
-## !!! Development on RO has stopped indefinitely !!!
+Resource Override is a Chrome extension that helps you gain full control of any website by redirecting traffic, replacing, editing, or inserting new content.
 
-If you still need to override stuff - see how chrome can override content natively: https://www.youtube.com/watch?v=KxjGYcHZ_uI
+## Features
 
-You can try to use my half baked [MV3 branch here](https://github.com/kylepaulsen/ResourceOverride/tree/mv3), but it is untested and I won't be supporting it.
+- **URL Redirection**: Redirect any URL to another URL
+- **File Replacement**: Replace remote resources with local files
+- **Content Injection**: Inject JavaScript or CSS into pages
+- **Header Modification**: Modify request and response headers
+- **DevTools Integration**: Full integration with Chrome DevTools
 
-I don't plan to work on RO anymore so it's very unlikly this will ever be
-finished. I'm not the biggest fan of what MV3 is forcing upon
-people, so I don't have very much motivation to finish this.
-Additionally, most modern web development doesn't really need/work
-with an extension like this, and even if there are use cases,
-Chrome supports overriding content natively within their debug
-tools: https://www.youtube.com/watch?v=KxjGYcHZ_uI
+## Manifest V3 Changes
 
-Anyway, I apologize if this is disappointing news. You are welcome
-to build the extension yourself or use the source code in other
-ways, as it is under the MIT license. Maybe someday I will really
-wish I finished this and have a bad need for it - but until that
-day, this will be my last commit.
+This extension has been upgraded from Manifest V2 to Manifest V3 to comply with Chrome's new extension requirements:
 
-Thanks everyone for using RO.
+### Key Changes Made:
 
-I wish you the best.
+1. **Service Worker**: Replaced background page with service worker
+2. **Storage API**: Updated to use Chrome's storage API for persistent data storage
+3. **Permissions**: Updated permissions to use `declarativeNetRequest` and `host_permissions`
+4. **Action API**: Updated from `browser_action` to `action`
+5. **WebRequest**: Removed blocking webRequest in favor of declarative rules
 
-### Old Readme text:
+### New Permissions:
 
-Resource Override is an extension to help you gain full control of any website by redirecting traffic, replacing, editing, or inserting new content.
+- `declarativeNetRequest`: For network request modification
+- `declarativeNetRequestFeedback`: For debugging network rules
+- `storage`: For storing extension data
+- `activeTab`: For accessing current tab
+- `host_permissions`: For accessing all URLs
 
-[Get the chrome extension here](https://chrome.google.com/webstore/detail/resource-override/pkoacgokdfckfpndoffpifphamojphii).
+### Installation
 
-### Now on firefox!
-[Get the FireFox extension here](https://addons.mozilla.org/en-US/firefox/addon/resourceoverride/)
+1. Clone this repository
+2. Open Chrome and go to `chrome://extensions/`
+3. Enable "Developer mode"
+4. Click "Load unpacked" and select the extension directory
+5. The extension will appear in your extensions list
+
+### Usage
+
+1. Click the extension icon to open the main interface
+2. Add a new tab group for the website you want to override
+3. Configure rules for URL redirection, file replacement, or content injection
+4. Enable the rules and refresh the target website
+
+### Development
+
+This extension is built for Chrome Extension Manifest V3 and may not be compatible with older browsers or extension frameworks.
+
+## License
+
+MIT License - see LICENSE file for details.

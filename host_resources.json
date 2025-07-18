@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "url": "http://localhost:3001/index_dev.js"
+      }
+    },
+    "condition": {
+      "urlFilter": "*://*/lizard-service-presentation-sdk.*.js",
+      "resourceTypes": ["script"]
+    }
+  }
+] 

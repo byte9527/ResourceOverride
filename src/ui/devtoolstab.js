@@ -11,60 +11,55 @@
     app.requestHeadersSuggest = app.suggest();
     app.responseHeadersSuggest = app.suggest();
     app.files = {};
-    app.skipNextSync = false;
 
     function renderData() {
+        console.log('Rendering data...');
         app.files = {};
         ui.domainDefs.children().remove();
+        
+        // Try to get existing domains from storage
         chrome.runtime.sendMessage({action: "getDomains"}, function(domains) {
-            if (domains.length) {
+            if (domains && domains.length) {
+                console.log('Loading existing domains:', domains.length);
                 domains.forEach(function(domain) {
                     const domainMarkup = app.createDomainMarkup(domain);
                     ui.domainDefs.append(domainMarkup);
                 });
             } else {
+                console.log('No existing domains, creating default');
+                // Just create a simple default domain for now
                 const newDomain = app.createDomainMarkup({rules: [{type: "normalOverride"}]});
                 ui.domainDefs.append(newDomain);
                 newDomain.find(".domainMatchInput").val("*");
-                chrome.runtime.sendMessage({
-                    action: "saveDomain",
-                    data: app.getDomainData(newDomain)
-                });
-                app.skipNextSync = true;
             }
-            util.getTabResources(function(res) {
-                app.mainSuggest.fillOptions(res);
-            });
+            console.log('Data rendered');
         });
     }
-
-    function setupSynchronizeConnection() {
-        chrome.runtime.sendMessage({action: "syncMe"}, function() {
-            if (!app.skipNextSync) {
-                renderData();
-            }
-            app.skipNextSync = false;
-            setupSynchronizeConnection();
-        });
-    }
+    
+    // Make renderData globally accessible
+    app.renderData = renderData;
 
     function init() {
+        console.log('Initializing UI...');
+        
         app.mainSuggest.init();
         app.requestHeadersSuggest.init();
         app.responseHeadersSuggest.init();
         app.requestHeadersSuggest.fillOptions(app.headersLists.requestHeaders);
         app.responseHeadersSuggest.fillOptions(app.headersLists.responseHeaders);
 
-        setupSynchronizeConnection();
-
         renderData();
 
         ui.addDomainBtn.on("click", function() {
+            console.log('Add domain clicked');
             const newDomain = app.createDomainMarkup();
             newDomain.find(".domainMatchInput").val("*");
             ui.domainDefs.append(newDomain);
-            chrome.runtime.sendMessage({action: "saveDomain", data: app.getDomainData(newDomain)});
-            app.skipNextSync = true;
+            // Save the new domain
+            chrome.runtime.sendMessage({
+                action: "saveDomain", 
+                data: app.getDomainData(newDomain)
+            });
         });
 
         ui.helpBtn.on("click", function() {
@@ -78,51 +73,16 @@
         if (!chrome.devtools) {
             ui.showSuggestions.hide();
             ui.showSuggestionsText.hide();
-            chrome.runtime.sendMessage({
-                action: "getSetting",
-                setting: "tabPageNotice"
-            }, function(data) {
-
-                if (data !== "true") {
-                    ui.tabPageNotice.find("a").on("click", function(e) {
-                        e.preventDefault();
-                        chrome.runtime.sendMessage({
-                            action: "setSetting",
-                            setting: "tabPageNotice",
-                            value: "true"
-                        });
-                        ui.tabPageNotice.fadeOut();
-                    });
-                    ui.tabPageNotice.fadeIn();
-                    setTimeout(function() {
-                        ui.tabPageNotice.fadeOut();
-                    }, 6000);
-                }
-            });
         }
 
-        if (navigator.userAgent.indexOf("Firefox") > -1 && !!chrome.devtools) {
-            // Firefox is really broken with the "/" and "'" keys. They just dont work.
-            // So try to fix them here.. wow.. just wow. I can't believe I'm fixing the ability to type.
-            const brokenKeys = { "/": 1, "?": 1, "'": 1, '"': 1 };
-            window.addEventListener("keydown", e => {
-                const brokenKey = brokenKeys[e.key];
-                const activeEl = document.activeElement;
-                if (brokenKey && (activeEl.nodeName === "INPUT" || activeEl.nodeName === "TEXTAREA") &&
-                    activeEl.className !== "ace_text-input") {
-
-                    e.preventDefault();
-                    const start = activeEl.selectionStart;
-                    const end = activeEl.selectionEnd;
-                    activeEl.value = activeEl.value.substring(0, start) + e.key +
-                        activeEl.value.substring(end, activeEl.value.length);
-                    activeEl.selectionStart = start + 1;
-                    activeEl.selectionEnd = start + 1;
-                }
-            });
-        }
+        console.log('UI initialized');
     }
 
-    init();
+    // Wait for DOM to be ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 
 })();

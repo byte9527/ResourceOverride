@@ -1,28 +1,12 @@
-/* global bgapp, match, matchReplace, browser */
+/* global bgapp, match, matchReplace */
 {
     const logOnTab = bgapp.util.logOnTab;
 
     const replaceContent = (requestId, mimeAndFile) => {
-        if (browser.webRequest.filterResponseData) {
-            // browsers that support filterResponseData
-            browser.webRequest.filterResponseData(requestId).onstart = e => {
-                const encoder = new TextEncoder();
-                e.target.write(encoder.encode(mimeAndFile.file));
-                e.target.disconnect();
-            };
-            return {
-                cancel: true,
-                responseHeaders: [{
-                    name: "Content-Type",
-                    value: mimeAndFile.mime
-                }]
-            };
-        }
-
-        // browsers that dont support filterResponseData
+        // Chrome MV3 uses data URLs for content replacement
+        // unescape is a easy solution to the utf-8 problem:
+        // https://developer.mozilla.org/en-US/docs/Web/API/WindowBase64/btoa#Unicode_Strings
         return {
-            // unescape is a easy solution to the utf-8 problem:
-            // https://developer.mozilla.org/en-US/docs/Web/API/WindowBase64/btoa#Unicode_Strings
             redirectUrl: "data:" + mimeAndFile.mime + ";charset=UTF-8;base64," +
                 btoa(unescape(encodeURIComponent(mimeAndFile.file)))
         };

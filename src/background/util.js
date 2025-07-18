@@ -3,14 +3,17 @@
     bgapp.util = {};
 
     bgapp.util.logOnTab = function(tabId, message, important) {
-        if (localStorage.showLogs === "true") {
-            important = !!important;
-            chrome.tabs.sendMessage(tabId, {
-                action: "log",
-                message: message,
-                important: important
-            });
-        }
+        // Check if logs are enabled using storage API
+        chrome.storage.local.get(['showLogs'], function(result) {
+            if (result.showLogs === "true") {
+                important = !!important;
+                chrome.tabs.sendMessage(tabId, {
+                    action: "log",
+                    message: message,
+                    important: important
+                });
+            }
+        });
     };
 
     bgapp.util.simpleError = function(err) {

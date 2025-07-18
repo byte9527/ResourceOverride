@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rule Test</title>
+</head>
+<body>
+    <h1>Rule Test Page</h1>
+    <button onclick="testRule()">Test Rule Matching</button>
+    <div id="result"></div>
+    
+    <script>
+        function testRule() {
+            chrome.runtime.sendMessage({action: "testRule"}, function(response) {
+                document.getElementById('result').innerHTML = 
+                    `<p>Test URL: ${response.testUrl}</p>
+                     <p>Test Pattern: ${response.testPattern}</p>
+                     <p>Matches: ${response.matches}</p>`;
+            });
+        }
+        
+        // Test loading a script that should be redirected
+        const script = document.createElement('script');
+        script.src = 'https://co-release-12.shimorelease.com/sdk/v2/assets/static/lizard-service-presentation-sdk.1.2.8.js';
+        document.head.appendChild(script);
+    </script>
+</body>
+</html> 

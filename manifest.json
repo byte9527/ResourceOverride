@@ -7,7 +7,7 @@
     "48": "icons/icon-48x48.png",
     "128": "icons/icon-128x128.png"
   },
-  "browser_action": {
+  "action": {
     "default_icon": {
       "16": "icons/icon-16x16.png"
     }
@@ -17,7 +17,7 @@
     "page": "src/ui/devtoolstab.html"
   },
   "background": {
-    "page": "src/background/background.html"
+    "service_worker": "src/background/service-worker.js"
   },
   "content_scripts": [{
       "matches" : ["*://*/*"],
@@ -25,6 +25,28 @@
       "all_frames": true,
       "run_at": "document_start"
   }],
-  "permissions": ["webRequest", "webRequestBlocking", "<all_urls>", "tabs"],
-  "manifest_version": 2
+  "permissions": [
+    "webRequest",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [{
+      "id": "ruleset_1",
+      "enabled": true,
+      "path": "rules.json"
+    }],
+    "host_resources": [{
+      "id": "host_resources_1",
+      "enabled": true,
+      "path": "host_resources.json"
+    }]
+  },
+  "manifest_version": 3
 }

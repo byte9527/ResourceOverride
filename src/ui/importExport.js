@@ -46,8 +46,20 @@
         // check data first.
         if ($.isArray(data) && data.every(checkDomain)) {
             // this will call the sync function so stuff will get re-rendered.
-            chrome.runtime.sendMessage({action: "import", data: data});
-            util.showToast("Load Succeeded!");
+            chrome.runtime.sendMessage({action: "import", data: data}, function(response) {
+                if (response && response.imported) {
+                    util.showToast("Load Succeeded!");
+                    // Refresh the UI to show imported data
+                    if (window.app && window.app.renderData) {
+                        window.app.renderData();
+                    } else {
+                        // Fallback: reload the page
+                        location.reload();
+                    }
+                } else {
+                    util.showToast("Load Failed: Could not import data.");
+                }
+            });
         } else {
             util.showToast("Load Failed: Invalid Resource Override JSON.");
         }

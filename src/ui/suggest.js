@@ -244,6 +244,7 @@
         }
 
         function highlightOption() {
+            if (!options || options.length === 0) return; // 防御
             const optionToHighlight = options.eq(selectedIndex);
             options.css("background", "#ffffff");
             optionToHighlight.css("background", "#aaaaaa");
