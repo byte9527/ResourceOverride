@@ -2,6 +2,30 @@
 
 console.log('Service worker starting...');
 
+// 初始化bgapp对象 - 这是其他模块依赖的全局对象
+self.bgapp = {};
+// 在service worker环境中，使用self代替window
+self.browser = self.chrome;
+
+// 导入所需的背景脚本模块
+try {
+  importScripts(
+    'util.js',
+    'requestHandling.js',
+    'keyvalDB.js',
+    'mainStorage.js',
+    'requestIdTracker.js',
+    'tabUrlTracker.js',
+    'headerHandling.js',
+    'init.js',
+    'match.js',
+    'extractMime.js'
+  );
+  console.log('Successfully imported background modules');
+} catch (error) {
+  console.error('Error importing background modules:', error.message);
+}
+
 // Track rule IDs for proper cleanup
 let currentRuleIds = [];
 let nextRuleId = 1000; // Start with a high ID to avoid conflicts
@@ -31,29 +55,48 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   try {
     if (request.action === "setSetting") {
       chrome.storage.local.set({[request.setting]: request.value}, () => {
-        sendResponse({success: true});
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+        } else {
+          sendResponse({success: true});
+        }
       });
       return true;
     } else if (request.action === "getSetting") {
       chrome.storage.local.get([request.setting], (result) => {
-        sendResponse(result[request.setting]);
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+        } else {
+          sendResponse(result[request.setting]);
+        }
       });
       return true;
     } else if (request.action === "syncMe") {
       sendResponse({synced: true});
+      return true;
     } else if (request.action === "getDomains") {
       chrome.storage.local.get(['storedDomains'], function(result) {
-        const domains = result.storedDomains || [];
-        console.log('Returning domains from storage:', domains.length);
-        sendResponse(domains);
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+        } else {
+          const domains = result.storedDomains || [];
+          console.log('Returning domains from storage:', domains.length);
+          sendResponse(domains);
+        }
       });
       return true;
     } else if (request.action === "match") {
       // Handle URL matching for content scripts
       const isMatch = isUrlMatch(request.domainUrl, request.windowUrl);
       sendResponse(isMatch);
+      return true; // 添加缺失的return语句
     } else if (request.action === "saveDomain") {
       chrome.storage.local.get(['storedDomains'], function(result) {
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+          return;
+        }
+        
         let domains = result.storedDomains || [];
         const existingIndex = domains.findIndex(d => d.id === request.data.id);
         if (existingIndex >= 0) {
@@ -61,30 +104,66 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
         } else {
           domains.push(request.data);
         }
+        
         chrome.storage.local.set({storedDomains: domains}, function() {
+          if (chrome.runtime.lastError) {
+            sendResponse({error: chrome.runtime.lastError.message});
+            return;
+          }
+          
           console.log('Domain saved to storage');
-          updateDeclarativeRules(domains);
-          sendResponse({saved: true});
+          updateDeclarativeRules(domains, function(success, error) {
+            if (error) {
+              sendResponse({error: error});
+            } else {
+              sendResponse({saved: true});
+            }
+          });
         });
       });
       return true;
     } else if (request.action === "import") {
       chrome.storage.local.set({storedDomains: request.data}, function() {
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+          return;
+        }
+        
         console.log('Imported domains saved to storage');
-        updateDeclarativeRules(request.data);
-        sendResponse({imported: true});
+        updateDeclarativeRules(request.data, function(success, error) {
+          if (error) {
+            sendResponse({error: error});
+          } else {
+            sendResponse({imported: true});
+          }
+        });
       });
       return true;
     } else if (request.action === "deleteDomain") {
       chrome.storage.local.get(['storedDomains'], function(result) {
+        if (chrome.runtime.lastError) {
+          sendResponse({error: chrome.runtime.lastError.message});
+          return;
+        }
+        
         let domains = result.storedDomains || [];
         const index = domains.findIndex(d => d.id === request.id);
         if (index >= 0) {
           domains.splice(index, 1);
           chrome.storage.local.set({storedDomains: domains}, function() {
+            if (chrome.runtime.lastError) {
+              sendResponse({error: chrome.runtime.lastError.message});
+              return;
+            }
+            
             console.log('Updated domains saved to storage after deletion');
-            updateDeclarativeRules(domains);
-            sendResponse({deleted: true});
+            updateDeclarativeRules(domains, function(success, error) {
+              if (error) {
+                sendResponse({error: error});
+              } else {
+                sendResponse({deleted: true});
+              }
+            });
           });
         } else {
           sendResponse({deleted: false});
@@ -93,10 +172,12 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
       return true;
     } else {
       sendResponse({error: 'Action not implemented yet'});
+      return true;
     }
   } catch (error) {
     console.error('Error in message handler:', error);
-    sendResponse({error: error.message});
+    sendResponse({error: error.message || 'Unknown error occurred'});
+    return true;
   }
 });
 
@@ -141,7 +222,7 @@ function getExistingRuleIds(callback) {
   chrome.declarativeNetRequest.getDynamicRules(function(rules) {
     if (chrome.runtime.lastError) {
       console.error('Error getting existing rules:', chrome.runtime.lastError);
-      callback([]);
+      callback([], chrome.runtime.lastError.message);
     } else {
       const ruleIds = rules.map(rule => rule.id);
       console.log('Existing rule IDs:', ruleIds);
@@ -151,34 +232,48 @@ function getExistingRuleIds(callback) {
 }
 
 // Function to update declarativeNetRequest rules
-function updateDeclarativeRules(domains) {
+function updateDeclarativeRules(domains, callback) {
   try {
+    callback = callback || function() {};
+    
     // First get existing rule IDs
-    getExistingRuleIds(function(existingRuleIds) {
+    getExistingRuleIds(function(existingRuleIds, error) {
+      if (error) {
+        console.error('Error getting existing rule IDs:', error);
+        callback(false, 'Error getting existing rule IDs: ' + error);
+        return;
+      }
+      
       const rules = [];
       let ruleId = nextRuleId;
       
-      for (const domain of domains) {
-        if (domain.on && domain.rules) {
-          for (const rule of domain.rules) {
-            if (rule.on && rule.type === "normalOverride") {
-              rules.push({
-                id: ruleId++,
-                priority: 1,
-                action: {
-                  type: "redirect",
-                  redirect: {
-                    url: rule.replace
+      try {
+        for (const domain of domains) {
+          if (domain && domain.on && domain.rules) {
+            for (const rule of domain.rules) {
+              if (rule && rule.on && rule.type === "normalOverride" && rule.match && rule.replace) {
+                rules.push({
+                  id: ruleId++,
+                  priority: 1,
+                  action: {
+                    type: "redirect",
+                    redirect: {
+                      url: rule.replace
+                    }
+                  },
+                  condition: {
+                    urlFilter: rule.match,
+                    resourceTypes: ["script", "stylesheet", "image", "xmlhttprequest", "sub_frame", "main_frame"]
                   }
-                },
-                condition: {
-                  urlFilter: rule.match,
-                  resourceTypes: ["script", "stylesheet", "image", "xmlhttprequest", "sub_frame", "main_frame"]
-                }
-              });
+                });
+              }
             }
           }
         }
+      } catch (e) {
+        console.error('Error building rules:', e);
+        callback(false, 'Error building rules: ' + e.message);
+        return;
       }
       
       console.log('Updating declarativeNetRequest rules:', rules.length);
@@ -189,7 +284,9 @@ function updateDeclarativeRules(domains) {
         addRules: []
       }, function() {
         if (chrome.runtime.lastError) {
-          console.error('Error removing old rules:', chrome.runtime.lastError);
+          const error = 'Error removing old rules: ' + chrome.runtime.lastError.message;
+          console.error(error);
+          callback(false, error);
         } else {
           console.log('Old rules removed');
           
@@ -200,23 +297,28 @@ function updateDeclarativeRules(domains) {
               addRules: rules
             }, function() {
               if (chrome.runtime.lastError) {
-                console.error('Error adding new rules:', chrome.runtime.lastError);
+                const error = 'Error adding new rules: ' + chrome.runtime.lastError.message;
+                console.error(error);
+                callback(false, error);
               } else {
                 console.log('New rules added successfully');
                 // Update current rule IDs and next rule ID
                 currentRuleIds = rules.map(rule => rule.id);
                 nextRuleId = ruleId;
+                callback(true);
               }
             });
           } else {
             console.log('No rules to add');
             currentRuleIds = [];
+            callback(true);
           }
         }
       });
     });
   } catch (error) {
     console.error('Error in updateDeclarativeRules:', error);
+    callback(false, 'Error in updateDeclarativeRules: ' + error.message);
   }
 }
 
@@ -236,7 +338,13 @@ chrome.storage.local.get(['devTools', 'showSuggestions', 'showLogs', 'storedDoma
     // Initialize declarative rules with existing domains
     if (result.storedDomains && result.storedDomains.length > 0) {
       console.log('Initializing rules with existing domains');
-      updateDeclarativeRules(result.storedDomains);
+      updateDeclarativeRules(result.storedDomains, function(success, error) {
+        if (error) {
+          console.error('Error initializing rules:', error);
+        } else {
+          console.log('Rules initialized successfully');
+        }
+      });
     }
     
     console.log('Settings initialized');

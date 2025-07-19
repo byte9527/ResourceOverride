@@ -206,3 +206,6 @@ var keyvalDB = function(dbName, schemaDef, version, options) {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = keyvalDB;
 }
+if (typeof self !== 'undefined') {
+    self.keyvalDB = keyvalDB;
+}
