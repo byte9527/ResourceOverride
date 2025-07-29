@@ -1,0 +1,60 @@
+{
+  "name": "Resource Override for V3",
+  "version": "1.3.2",
+  "description": "An extension to help you gain full control of any website by redirecting traffic, replacing, editing, or inserting new content.",
+  "manifest_version": 3,
+  "icons": {
+    "16": "icons/icon-16x16.png",
+    "48": "icons/icon-48x48.png",
+    "128": "icons/icon-128x128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon-16x16.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["src/inject/content-main.ts"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "type": "module"
+    }
+  ],
+  "devtools_page": "src/ui/devtools.html",
+  "options_ui": {
+    "page": "src/ui/options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "webRequest",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/*", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+} 
