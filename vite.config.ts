@@ -36,6 +36,7 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         input: {
           // 这些入口点会被rollup-plugin-chrome-extension自动检测
+          'devtools': 'src/ui/devtools.js'
         },
         output: {
           // 保持清晰的文件结构
