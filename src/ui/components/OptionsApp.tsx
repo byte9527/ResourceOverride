@@ -90,7 +90,7 @@ const OptionsApp: React.FC = () => {
       ]);
       
       setShowLogs(result.showLogs === 'true');
-      setVersion(result.version || '1.3.2');
+      setVersion(result.version || '1.0.0');
       setInstallDate(result.installDate || '');
       setUpdateDate(result.updateDate || '');
     } catch (error) {
@@ -127,6 +127,15 @@ const OptionsApp: React.FC = () => {
     } catch (error) {
       console.error('Failed to clear cache:', error);
       message.error('清理缓存失败');
+    }
+  };
+
+  const handleOpenExtensionManager = async (): Promise<void> => {
+    try {
+      await chrome.tabs.create({ url: 'chrome://extensions/' });
+    } catch (error) {
+      console.error('Failed to open extension manager:', error);
+      message.error('无法打开扩展管理页面');
     }
   };
 
@@ -507,7 +516,7 @@ const OptionsApp: React.FC = () => {
                       清理缓存
                     </Button>
                     <Button 
-                      onClick={() => window.open('chrome://extensions/')}
+                      onClick={handleOpenExtensionManager}
                     >
                       扩展管理
                     </Button>
@@ -551,7 +560,7 @@ const OptionsApp: React.FC = () => {
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
                     <Row justify="space-between">
                       <Text>扩展版本:</Text>
-                      <Tag color="blue">{version || '1.3.2'}</Tag>
+                      <Tag color="blue">{version || '1.0.0'}</Tag>
                     </Row>
                     {installDate && (
                       <Row justify="space-between">

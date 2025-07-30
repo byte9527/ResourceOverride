@@ -89,7 +89,7 @@ export default defineConfig(({ mode }) => {
     // 环境变量
     define: {
       __DEV__: isDev,
-      __VERSION__: JSON.stringify(process.env.npm_package_version || '1.3.2')
+      __VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0')
     }
   };
 }); 
