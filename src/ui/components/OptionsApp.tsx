@@ -30,7 +30,8 @@ import {
   PauseCircleOutlined,
   GlobalOutlined,
   DownloadOutlined,
-  UploadOutlined
+  UploadOutlined,
+  RightOutlined
 } from '@ant-design/icons';
 
 const { Title, Paragraph, Text } = Typography;
@@ -580,9 +581,12 @@ const OptionsApp: React.FC = () => {
                     <Button
                       type="text"
                       size="small"
-                      icon={<GlobalOutlined />}
+                      icon={<RightOutlined />}
                       onClick={e => onExpand(record, e)}
-                      style={{ transform: expanded ? 'rotate(90deg)' : 'none' }}
+                      style={{ 
+                        transform: expanded ? 'rotate(90deg)' : 'none',
+                        transition: 'transform 0.2s ease'
+                      }}
                     />
                   ),
                 }}

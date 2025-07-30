@@ -26,7 +26,8 @@ import {
   BugOutlined,
   GlobalOutlined,
   DownloadOutlined,
-  UploadOutlined
+  UploadOutlined,
+  RightOutlined
 } from '@ant-design/icons';
 
 const { Header, Content } = Layout;
@@ -506,9 +507,12 @@ const DevToolsApp: React.FC = () => {
                 <Button
                   type="text"
                   size="small"
-                  icon={<GlobalOutlined />}
+                  icon={<RightOutlined />}
                   onClick={e => onExpand(record, e)}
-                  style={{ transform: expanded ? 'rotate(90deg)' : 'none' }}
+                  style={{ 
+                    transform: expanded ? 'rotate(90deg)' : 'none',
+                    transition: 'transform 0.2s ease'
+                  }}
                 />
               ),
             }}
