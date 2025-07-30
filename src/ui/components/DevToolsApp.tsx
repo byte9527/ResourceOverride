@@ -24,7 +24,9 @@ import {
   PauseCircleOutlined,
   SettingOutlined,
   BugOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  DownloadOutlined,
+  UploadOutlined
 } from '@ant-design/icons';
 
 const { Header, Content } = Layout;
@@ -47,6 +49,7 @@ interface Domain {
   url: string;
   on: boolean;
   rules: Rule[];
+  description?: string;
 }
 
 const DevToolsApp: React.FC = () => {
@@ -203,6 +206,88 @@ const DevToolsApp: React.FC = () => {
     }
   };
 
+  // 导出规则
+  const handleExportRules = (): void => {
+    try {
+      const exportData = {
+        version: '1.0.0',
+        exportTime: new Date().toISOString(),
+        domains: domains
+      };
+      
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `resource-override-rules-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      message.success('规则导出成功');
+    } catch (error) {
+      console.error('Export failed:', error);
+      message.error('导出失败');
+    }
+  };
+
+  // 导入规则
+  const handleImportRules = (): void => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (event: Event) => {
+      const target = event.target as HTMLInputElement;
+      const file = target.files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const importData = JSON.parse(text);
+        
+        // 验证导入数据格式
+        if (!importData.domains || !Array.isArray(importData.domains)) {
+          throw new Error('Invalid import format');
+        }
+
+        // 显示确认对话框
+        Modal.confirm({
+          title: '确认导入规则',
+          content: `确定要导入 ${importData.domains.length} 个域名的规则吗？这将覆盖现有的所有规则。`,
+          okText: '导入',
+          cancelText: '取消',
+          onOk: async () => {
+            try {
+              // 为导入的规则生成新的ID
+              const processedDomains = importData.domains.map((domain: any) => ({
+                ...domain,
+                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                rules: domain.rules.map((rule: any) => ({
+                  ...rule,
+                  id: Date.now().toString() + Math.random().toString(36).substr(2, 9)
+                }))
+              }));
+              
+              await saveDomains(processedDomains);
+              setDomains(processedDomains);
+              message.success('规则导入成功');
+            } catch (error) {
+              console.error('Import save failed:', error);
+              message.error('导入保存失败');
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Import failed:', error);
+        message.error('导入失败，请检查文件格式');
+      }
+    };
+    input.click();
+  };
+
   const domainColumns = [
     {
       title: '状态',
@@ -234,6 +319,13 @@ const DevToolsApp: React.FC = () => {
           {rules.length} 条
         </Tag>
       ),
+    },
+    {
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+      ellipsis: true,
+      render: (description: string) => description || '-',
     },
     {
       title: '操作',
@@ -380,6 +472,18 @@ const DevToolsApp: React.FC = () => {
               添加域名
             </Button>
             <Button
+              icon={<UploadOutlined />}
+              onClick={handleImportRules}
+            >
+              导入规则
+            </Button>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={handleExportRules}
+            >
+              导出规则
+            </Button>
+            <Button
               icon={<SettingOutlined />}
               onClick={() => chrome.runtime.openOptionsPage()}
             >
@@ -433,6 +537,12 @@ const DevToolsApp: React.FC = () => {
             rules={[{ required: true, message: '请输入域名或URL匹配规则' }]}
           >
             <Input placeholder="例如: *.example.com 或 https://example.com/*" />
+          </Form.Item>
+          <Form.Item
+            label="描述"
+            name="description"
+          >
+            <Input placeholder="域名描述（可选）" />
           </Form.Item>
           <Form.Item
             label="启用状态"

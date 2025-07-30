@@ -26,6 +26,7 @@ export interface Domain {
   url: string;
   on: boolean;
   rules: Rule[];
+  description?: string;
 }
 
 export interface ExtensionStorage {
