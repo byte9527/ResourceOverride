@@ -74,10 +74,17 @@ export class Utils {
   }
 
   /**
-   * Generate unique ID
+   * Generate unique ID (alphanumeric - for UI elements)
    */
   static generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  }
+
+  /**
+   * Generate numeric ID (for Chrome declarativeNetRequest rules)
+   */
+  static generateNumericId(): string {
+    return (Date.now() + Math.floor(Math.random() * 1000)).toString();
   }
 }
 
@@ -88,3 +95,4 @@ if (typeof globalThis.bgapp !== 'undefined') {
     simpleError: Utils.simpleError
   };
 } 
+ 

@@ -15,6 +15,7 @@ export class RuleManager {
   private tabRules = new Map<number, { url: string; timestamp: number }>();
   private globalRules = new Map<string, any>();
   private ruleIdCounter = 1000; // Start from 1000 to avoid conflicts
+  private usedRuleIds = new Set<number>(); // 跟踪已使用的ID
   private storageManager: StorageManager;
 
   constructor() {
@@ -24,12 +25,58 @@ export class RuleManager {
   async init(): Promise<void> {
     console.log('⚙️ Initializing Rule Manager...');
     await this.storageManager.init();
+    
+    // 初始化时获取现有规则的ID，避免冲突
+    await this.initializeExistingRuleIds();
+    
     await this.loadRules();
+  }
+
+  /**
+   * 初始化现有规则ID，避免冲突
+   */
+  private async initializeExistingRuleIds(): Promise<void> {
+    try {
+      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
+      this.usedRuleIds.clear();
+      
+      existingRules.forEach(rule => {
+        this.usedRuleIds.add(rule.id);
+      });
+      
+      // 确保计数器从未使用的ID开始
+      while (this.usedRuleIds.has(this.ruleIdCounter)) {
+        this.ruleIdCounter++;
+      }
+      
+      console.log(`📋 Initialized with ${existingRules.length} existing rule IDs: [${Array.from(this.usedRuleIds).join(', ')}]`);
+      console.log(`🔢 Starting rule ID counter from: ${this.ruleIdCounter}`);
+      
+    } catch (error) {
+      console.error('❌ Failed to initialize existing rule IDs:', error);
+    }
+  }
+
+  /**
+   * 生成唯一的规则ID
+   */
+  private generateUniqueRuleId(): number {
+    // 找到下一个未使用的ID
+    while (this.usedRuleIds.has(this.ruleIdCounter)) {
+      this.ruleIdCounter++;
+    }
+    
+    const newId = this.ruleIdCounter++;
+    this.usedRuleIds.add(newId);
+    
+    console.log(`🆔 Generated unique rule ID: ${newId}`);
+    return newId;
   }
 
   async loadRules(): Promise<void> {
     try {
-      const storage = await this.storageManager.get();
+      // Force refresh to ensure we get the latest data
+      const storage = await this.storageManager.forceRefresh();
       
       // Clear existing rules
       await this.clearAllDynamicRules();
@@ -72,8 +119,9 @@ export class RuleManager {
 
   private convertToDeclarativeRule(rule: Rule, domain: Domain): chrome.declarativeNetRequest.Rule | null {
     try {
+      const ruleId = this.generateUniqueRuleId();
       const baseRule: Partial<chrome.declarativeNetRequest.Rule> = {
-        id: this.ruleIdCounter++,
+        id: ruleId,
         priority: 1,
         condition: {
           urlFilter: this.convertPattern(rule.from),
@@ -207,20 +255,56 @@ export class RuleManager {
       const ruleIds = existingRules.map(rule => rule.id);
       
       if (ruleIds.length > 0) {
+        console.log(`🗑️ About to clear ${ruleIds.length} existing rules: [${ruleIds.join(', ')}]`);
+        
         await chrome.declarativeNetRequest.updateDynamicRules({
           removeRuleIds: ruleIds
         });
         
-        console.log(`🗑️ Cleared ${ruleIds.length} existing rules`);
+        // 清除已使用ID跟踪
+        ruleIds.forEach(id => {
+          this.usedRuleIds.delete(id);
+        });
+        
+        console.log(`✅ Successfully cleared ${ruleIds.length} existing rules and updated ID tracking`);
+        
+        // 验证清除是否成功
+        const verifyRules = await chrome.declarativeNetRequest.getDynamicRules();
+        if (verifyRules.length > 0) {
+          console.warn(`⚠️ Warning: ${verifyRules.length} rules still remain after clear!`);
+          verifyRules.forEach(rule => {
+            console.warn(`  🔍 Remaining rule ID: ${rule.id}, type: ${rule.action.type}`);
+          });
+        }
+      } else {
+        console.log(`🗑️ No existing rules to clear`);
       }
+      
+      // 重置ID计数器但保持高于任何现有ID
+      this.ruleIdCounter = Math.max(1000, ...Array.from(this.usedRuleIds), 0) + 1;
+      console.log(`🔢 Reset rule ID counter to: ${this.ruleIdCounter}`);
+      
     } catch (error) {
+      console.error('❌ Failed to clear dynamic rules:', error);
       Utils.simpleError(error);
     }
   }
 
   async updateRules(): Promise<void> {
     console.log('🔄 Updating rules...');
-    await this.loadRules();
+    
+    try {
+      // 重新加载规则
+      await this.loadRules();
+      
+      // 验证规则确实被更新了
+      const finalRules = await chrome.declarativeNetRequest.getDynamicRules();
+      console.log(`✅ Rules updated successfully: ${finalRules.length} rules now active`);
+      
+    } catch (error) {
+      console.error('❌ Failed to update rules:', error);
+      throw error;
+    }
   }
 
   async updateTabRules(tabId: number, url: string): Promise<void> {
@@ -256,3 +340,4 @@ export class RuleManager {
     }
   }
 } 
+ 

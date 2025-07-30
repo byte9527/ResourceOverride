@@ -151,6 +151,17 @@ export class StorageManager {
   }
 
   /**
+   * Force refresh - clear cache and immediately fetch fresh data
+   */
+  async forceRefresh(): Promise<ExtensionStorage> {
+    console.log('🔄 Force refreshing storage data...');
+    this.clearCache();
+    const freshData = await this.get();
+    console.log(`✅ Fresh data loaded: ${freshData.domains?.length || 0} domains`);
+    return freshData;
+  }
+
+  /**
    * Legacy compatibility method
    */
   legacyGet(callback: (data: ExtensionStorage) => void): void {
@@ -172,3 +183,4 @@ export class StorageManager {
     });
   }
 } 
+ 

@@ -198,13 +198,13 @@ const OptionsApp: React.FC = () => {
           cancelText: '取消',
           onOk: async () => {
             try {
-              // 为导入的规则生成新的ID
+              // 为导入的规则生成新的ID（纯数字）
               const processedDomains = importData.domains.map((domain: any) => ({
                 ...domain,
-                id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                id: (Date.now() + Math.floor(Math.random() * 1000)).toString(),
                 rules: domain.rules.map((rule: any) => ({
                   ...rule,
-                  id: Date.now().toString() + Math.random().toString(36).substr(2, 9)
+                  id: (Date.now() + Math.floor(Math.random() * 1000)).toString()
                 }))
               }));
               
@@ -322,7 +322,7 @@ const OptionsApp: React.FC = () => {
         await saveDomains(newDomains);
       } else {
         const newDomain: Domain = {
-          id: Date.now().toString(),
+          id: (Date.now() + Math.floor(Math.random() * 1000)).toString(),
           ...values,
           rules: []
         };
@@ -338,7 +338,7 @@ const OptionsApp: React.FC = () => {
   const handleRuleSubmit = async (values: any): Promise<void> => {
     try {
       const newRule: Rule = {
-        id: editingRule?.id || Date.now().toString(),
+        id: editingRule?.id || (Date.now() + Math.floor(Math.random() * 1000)).toString(),
         ...values
       };
 
@@ -836,3 +836,4 @@ const OptionsApp: React.FC = () => {
 };
 
 export default OptionsApp; 
+ 

@@ -2,7 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import DevToolsApp from './components/DevToolsApp';
+import OptionsApp from './components/OptionsApp';
 import 'antd/dist/reset.css';
 
 console.log('🛠️ React DevTools page loading...');
@@ -25,7 +25,7 @@ const initializeReactApp = () => {
           borderRadius: 6,
         }
       }}>
-        <DevToolsApp />
+        <OptionsApp />
       </ConfigProvider>
     </React.StrictMode>
   );

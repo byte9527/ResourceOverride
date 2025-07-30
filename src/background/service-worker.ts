@@ -127,12 +127,20 @@ class ExtensionServiceWorker {
     // Storage events
     chrome.storage.onChanged.addListener(this.handleStorageChanged.bind(this));
     
-    // Web request events
-    chrome.webRequest.onBeforeRequest.addListener(
-      this.requestHandler.handleBeforeRequest.bind(this.requestHandler),
-      { urls: ["<all_urls>"] },
-      ["requestBody"]
-    );
+    // Web request events - For monitoring only in Manifest V3
+    // Note: webRequest can't modify requests in MV3, only declarativeNetRequest can
+    if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
+      chrome.webRequest.onBeforeRequest.addListener(
+        (details) => {
+          // Only log for debugging in MV3
+          console.log(`🔍 [DEBUG] Request: ${details.url} (webRequest monitoring only)`);
+          // webRequest can't modify requests in MV3 - declarativeNetRequest handles that
+        },
+        { urls: ["<all_urls>"] },
+        ["requestBody"]
+      );
+      console.log('📋 webRequest monitoring enabled (debug only)');
+    }
     
     // Message handling
     chrome.runtime.onMessage.addListener(this.handleMessage.bind(this));
@@ -188,15 +196,66 @@ class ExtensionServiceWorker {
    */
   private async handleStorageChanged(
     changes: { [key: string]: chrome.storage.StorageChange },
-    areaName: 'sync' | 'local' | 'managed'
+    areaName: 'sync' | 'local' | 'managed' | 'session'
   ): Promise<void> {
     if (areaName === 'local') {
       console.log('💾 Storage changed:', Object.keys(changes));
-      this.storageManager.clearCache();
       
       if (changes.domains) {
+        console.log('🔄 Domains changed, updating rules...');
+        
+        // 立即清除缓存，避免竞态条件
+        this.storageManager.clearCache();
+        console.log('🧹 Storage cache cleared');
+        
+        // 添加小延迟确保UI完全保存
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // 再次清除缓存确保获取最新数据
+        this.storageManager.clearCache();
+        console.log('🧹 Storage cache cleared again to ensure fresh data');
+        
+        // 更新规则
         await this.ruleManager.updateRules();
+        
+        // 强制刷新缓存
+        await this.forceRefreshCaches();
+        
+        console.log('✅ Rule update and cache refresh completed');
       }
+    }
+  }
+
+  /**
+   * 强制刷新所有相关缓存
+   */
+  private async forceRefreshCaches(): Promise<void> {
+    try {
+      // 清除webRequest处理器缓存
+      if (chrome.webRequest && chrome.webRequest.handlerBehaviorChanged) {
+        await chrome.webRequest.handlerBehaviorChanged();
+        console.log('🔄 Cleared webRequest handler cache');
+      }
+      
+      // 通知所有标签页规则已更新
+      const tabs = await chrome.tabs.query({});
+      let notifiedCount = 0;
+      
+      for (const tab of tabs) {
+        if (tab.id && tab.url && !tab.url.startsWith('chrome://')) {
+          try {
+            await chrome.tabs.sendMessage(tab.id, { action: 'rulesUpdated' });
+            notifiedCount++;
+          } catch (error) {
+            // 忽略无法发送消息的标签页（如扩展页面）
+          }
+        }
+      }
+      
+      console.log(`📢 Notified ${notifiedCount} tabs about rule updates`);
+      
+         } catch (error: any) {
+       console.error('❌ Failed to refresh caches:', error);
     }
   }
 
@@ -283,3 +342,4 @@ if (__DEV__) {
   (globalThis as any).extensionServiceWorker = extensionServiceWorker;
   console.log('🔍 Development mode: extensionServiceWorker available globally');
 } 
+ 
