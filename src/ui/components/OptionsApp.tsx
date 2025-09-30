@@ -31,7 +31,8 @@ import {
   GlobalOutlined,
   DownloadOutlined,
   UploadOutlined,
-  RightOutlined
+  RightOutlined,
+  CopyOutlined
 } from '@ant-design/icons';
 
 const { Title, Paragraph, Text } = Typography;
@@ -290,6 +291,44 @@ const OptionsApp: React.FC = () => {
     await saveDomains(newDomains);
   };
 
+  // 复制域名组（包含其下所有规则）
+  const duplicateDomain = async (domainId: string): Promise<void> => {
+    const source = domains.find(d => d.id === domainId);
+    if (!source) return;
+    const newDomainId = (Date.now() + Math.floor(Math.random() * 1000)).toString();
+    const copiedRules = (source.rules || []).map(rule => ({
+      ...rule,
+      id: (Date.now() + Math.floor(Math.random() * 1000)).toString(),
+    }));
+    const copiedDomain: Domain = {
+      ...source,
+      id: newDomainId,
+      rules: copiedRules,
+    };
+    const newDomains = [...domains, copiedDomain];
+    await saveDomains(newDomains);
+    message.success('已复制域名组');
+  };
+
+  // 复制单条规则
+  const duplicateRule = async (domainId: string, ruleId: string): Promise<void> => {
+    const newDomains = domains.map(domain => {
+      if (domain.id !== domainId) return domain;
+      const rule = domain.rules.find(r => r.id === ruleId);
+      if (!rule) return domain;
+      const copiedRule: Rule = {
+        ...rule,
+        id: (Date.now() + Math.floor(Math.random() * 1000)).toString(),
+      };
+      return {
+        ...domain,
+        rules: [...domain.rules, copiedRule],
+      };
+    });
+    await saveDomains(newDomains);
+    message.success('已复制规则');
+  };
+
   const openDomainModal = (domain?: Domain): void => {
     setEditingDomain(domain || null);
     if (domain) {
@@ -414,6 +453,13 @@ const OptionsApp: React.FC = () => {
               onClick={() => openDomainModal(record)}
             />
           </Tooltip>
+          <Tooltip title="复制域名组">
+            <Button
+              type="text"
+              icon={<CopyOutlined />}
+              onClick={() => duplicateDomain(record.id)}
+            />
+          </Tooltip>
           <Tooltip title="添加规则">
             <Button
               type="text"
@@ -461,7 +507,7 @@ const OptionsApp: React.FC = () => {
             urlRedirect: { color: 'blue', text: 'URL重定向' },
             fileOverride: { color: 'green', text: '文件替换' },
             headerModification: { color: 'orange', text: '头部修改' },
-            contentModification: { color: 'purple', text: '内容修改' },
+            // contentModification: { color: 'purple', text: '内容修改' },
           };
           const config = typeMap[type] || { color: 'default', text: type };
           return <Tag color={config.color}>{config.text}</Tag>;
@@ -499,6 +545,14 @@ const OptionsApp: React.FC = () => {
               icon={<EditOutlined />}
               onClick={() => openRuleModal(domain.id, rule)}
             />
+            <Tooltip title="复制规则">
+              <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={() => duplicateRule(domain.id, rule.id)}
+              />
+            </Tooltip>
             <Popconfirm
               title="确定删除此规则？"
               onConfirm={() => deleteRule(domain.id, rule.id)}
