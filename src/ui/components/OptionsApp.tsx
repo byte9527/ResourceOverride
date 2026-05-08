@@ -821,8 +821,9 @@ const OptionsApp: React.FC = () => {
             label="匹配规则"
             name="from"
             rules={[{ required: true, message: '请输入匹配规则' }]}
+            extra="支持普通字符串、通配符 *，以及正则 /.../。URL重定向使用正则时，可在目标URL中引用 $1、$2。"
           >
-            <Input placeholder="要匹配的URL或路径" />
+            <Input placeholder="例如: /dist/(.*)/ 或 https://example.com/*.js" />
           </Form.Item>
           
           <Form.Item
@@ -836,7 +837,7 @@ const OptionsApp: React.FC = () => {
               }),
             ]}
           >
-            <Input placeholder="重定向的目标URL" />
+            <Input placeholder="例如: http://localhost:8090/dist/$1" />
           </Form.Item>
           
           <Form.Item
