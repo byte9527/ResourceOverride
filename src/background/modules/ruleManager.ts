@@ -120,11 +120,12 @@ export class RuleManager {
   private convertToDeclarativeRule(rule: Rule, domain: Domain): chrome.declarativeNetRequest.Rule | null {
     try {
       const ruleId = this.generateUniqueRuleId();
+      const condition = this.buildCondition(rule.from);
       const baseRule: Partial<chrome.declarativeNetRequest.Rule> = {
         id: ruleId,
         priority: 1,
         condition: {
-          urlFilter: this.convertPattern(rule.from),
+          ...condition,
           resourceTypes: [
             chrome.declarativeNetRequest.ResourceType.MAIN_FRAME,
             chrome.declarativeNetRequest.ResourceType.SUB_FRAME,
@@ -139,11 +140,15 @@ export class RuleManager {
       switch (rule.type) {
         case 'urlRedirect':
           if (rule.to) {
+            const redirect = this.isRegexPattern(rule.from)
+              ? { regexSubstitution: this.convertRegexSubstitution(rule.to) }
+              : { url: rule.to };
+
             return {
               ...baseRule,
               action: {
                 type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
-                redirect: { url: rule.to }
+                redirect
               }
             } as chrome.declarativeNetRequest.Rule;
           }
@@ -214,17 +219,38 @@ export class RuleManager {
     }
   }
 
-  private convertPattern(pattern: string): string {
+  private buildCondition(pattern: string): chrome.declarativeNetRequest.RuleCondition {
+    if (this.isRegexPattern(pattern)) {
+      return {
+        regexFilter: this.stripRegexDelimiters(pattern)
+      };
+    }
+
+    return {
+      urlFilter: this.convertUrlFilterPattern(pattern)
+    };
+  }
+
+  private convertUrlFilterPattern(pattern: string): string {
     // Convert our pattern format to declarative net request urlFilter
     if (pattern.includes('*')) {
       return pattern;
-    } else if (pattern.startsWith('/') && pattern.endsWith('/')) {
-      // Regex patterns need special handling in declarative net request
-      return pattern.slice(1, -1);
     } else {
       // Exact match or contains
       return `*${pattern}*`;
     }
+  }
+
+  private isRegexPattern(pattern: string): boolean {
+    return pattern.startsWith('/') && pattern.endsWith('/') && pattern.length > 1;
+  }
+
+  private stripRegexDelimiters(pattern: string): string {
+    return pattern.slice(1, -1);
+  }
+
+  private convertRegexSubstitution(targetUrl: string): string {
+    return targetUrl.replace(/\$(\d+)/g, (_match, group) => `\\${group}`);
   }
 
   private getMimeType(fileType?: string): string {
