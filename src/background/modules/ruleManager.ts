@@ -1,22 +1,31 @@
 /// <reference types="chrome"/>
 import { Utils } from './utils';
-import { StorageManager, Rule, Domain } from './storage';
+import {
+  StorageManager,
+  Rule,
+  Domain,
+  RuleContext,
+  RuleSource,
+  RuleStats,
+  TabRuleSession,
+  TabRuleSessionMap
+} from './storage';
 
-interface RuleStats {
-  dynamicRules: number;
-  staticRules: number;
-  tabRules: number;
+const TAB_RULE_SESSIONS_KEY = 'tabRuleSessions';
+const FIRST_RULE_ID = 1000;
+
+interface RuleScopeCondition {
+  tabIds?: number[];
+  excludedTabIds?: number[];
 }
 
 /**
- * Rule manager for handling declarative net request rules
+ * Owns all editable DNR rules and the per-tab rule-session lifecycle.
  */
 export class RuleManager {
-  private tabRules = new Map<number, { url: string; timestamp: number }>();
-  private globalRules = new Map<string, any>();
-  private ruleIdCounter = 1000; // Start from 1000 to avoid conflicts
-  private usedRuleIds = new Set<number>(); // 跟踪已使用的ID
   private storageManager: StorageManager;
+  private ruleIdCounter = FIRST_RULE_ID;
+  private updateQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     this.storageManager = new StorageManager();
@@ -25,107 +34,272 @@ export class RuleManager {
   async init(): Promise<void> {
     console.log('⚙️ Initializing Rule Manager...');
     await this.storageManager.init();
-    
-    // 初始化时获取现有规则的ID，避免冲突
-    await this.initializeExistingRuleIds();
-    
-    await this.loadRules();
+    await this.enqueueUpdate(async () => {
+      await this.pruneClosedTabSessions();
+      await this.rebuildRulesNow();
+    });
   }
 
-  /**
-   * 初始化现有规则ID，避免冲突
-   */
-  private async initializeExistingRuleIds(): Promise<void> {
-    try {
-      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-      this.usedRuleIds.clear();
-      
-      existingRules.forEach(rule => {
-        this.usedRuleIds.add(rule.id);
-      });
-      
-      // 确保计数器从未使用的ID开始
-      while (this.usedRuleIds.has(this.ruleIdCounter)) {
-        this.ruleIdCounter++;
-      }
-      
-      console.log(`📋 Initialized with ${existingRules.length} existing rule IDs: [${Array.from(this.usedRuleIds).join(', ')}]`);
-      console.log(`🔢 Starting rule ID counter from: ${this.ruleIdCounter}`);
-      
-    } catch (error) {
-      console.error('❌ Failed to initialize existing rule IDs:', error);
+  async getRuleContext(tabId?: number): Promise<RuleContext> {
+    const globalDomains = await this.getGlobalDomains();
+    if (tabId === undefined) {
+      return {
+        source: 'global',
+        privateRulesEnabled: false,
+        hasPrivateDraft: false,
+        domains: this.cloneDomains(globalDomains)
+      };
     }
+
+    await this.assertValidTab(tabId);
+    const sessions = await this.getTabRuleSessions();
+    const session = sessions[String(tabId)];
+
+    return {
+      tabId,
+      source: session?.enabled ? 'tab' : 'global',
+      privateRulesEnabled: Boolean(session?.enabled),
+      hasPrivateDraft: Boolean(session),
+      domains: this.cloneDomains(session?.enabled ? session.domains : globalDomains)
+    };
   }
 
-  /**
-   * 生成唯一的规则ID
-   */
-  private generateUniqueRuleId(): number {
-    // 找到下一个未使用的ID
-    while (this.usedRuleIds.has(this.ruleIdCounter)) {
-      this.ruleIdCounter++;
-    }
-    
-    const newId = this.ruleIdCounter++;
-    this.usedRuleIds.add(newId);
-    
-    console.log(`🆔 Generated unique rule ID: ${newId}`);
-    return newId;
-  }
+  async setTabRulesEnabled(tabId: number, enabled: boolean): Promise<RuleContext> {
+    return this.enqueueUpdate(async () => {
+      await this.assertValidTab(tabId);
+      const previousSessions = await this.getTabRuleSessions();
+      const nextSessions = this.cloneSessions(previousSessions);
+      const key = String(tabId);
+      const now = Date.now();
 
-  async loadRules(): Promise<void> {
-    try {
-      // Force refresh to ensure we get the latest data
-      const storage = await this.storageManager.forceRefresh();
-      
-      // Clear existing rules
-      await this.clearAllDynamicRules();
-      
-      // Convert storage rules to declarative net request rules
-      const declarativeRules: chrome.declarativeNetRequest.Rule[] = [];
-      
-      storage.domains?.forEach(domain => {
-        if (domain.on) {
-          domain.rules?.forEach(rule => {
-            if (rule.on && this.canConvertToDeclarative(rule)) {
-              const declarativeRule = this.convertToDeclarativeRule(rule, domain);
-              if (declarativeRule) {
-                declarativeRules.push(declarativeRule);
-              }
-            }
-          });
+      if (enabled) {
+        const existing = nextSessions[key];
+        if (existing) {
+          existing.enabled = true;
+          existing.updatedAt = now;
+        } else {
+          nextSessions[key] = {
+            enabled: true,
+            domains: this.cloneDomains(await this.getGlobalDomains()),
+            createdAt: now,
+            updatedAt: now
+          };
         }
-      });
-      
-      // Add rules to Chrome's declarative net request
-      if (declarativeRules.length > 0) {
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          addRules: declarativeRules
-        });
-        
-        console.log(`📜 Added ${declarativeRules.length} declarative rules`);
+      } else if (nextSessions[key]) {
+        nextSessions[key].enabled = false;
+        nextSessions[key].updatedAt = now;
       }
-      
+
+      await this.commitSessionMutation(previousSessions, nextSessions);
+      return this.getRuleContext(tabId);
+    });
+  }
+
+  async saveRuleContext(
+    source: RuleSource,
+    domains: Domain[],
+    tabId?: number
+  ): Promise<RuleContext> {
+    return this.enqueueUpdate(async () => {
+      if (source === 'global') {
+        const previousDomains = await this.getGlobalDomains();
+        const nextDomains = this.cloneDomains(domains);
+        try {
+          await this.storageManager.set({ domains: nextDomains });
+          this.storageManager.clearCache();
+          await this.rebuildRulesNow();
+        } catch (error) {
+          await this.storageManager.set({ domains: previousDomains });
+          this.storageManager.clearCache();
+          await this.rebuildRulesNow();
+          throw error;
+        }
+        return this.getRuleContext(tabId);
+      }
+
+      if (tabId === undefined) {
+        throw new Error('Private rule context requires a tabId');
+      }
+
+      await this.assertValidTab(tabId);
+      const previousSessions = await this.getTabRuleSessions();
+      const nextSessions = this.cloneSessions(previousSessions);
+      const session = nextSessions[String(tabId)];
+      if (!session?.enabled) {
+        throw new Error('The current tab is not using private rules');
+      }
+
+      session.domains = this.cloneDomains(domains);
+      session.updatedAt = Date.now();
+      await this.commitSessionMutation(previousSessions, nextSessions);
+      return this.getRuleContext(tabId);
+    });
+  }
+
+  async resetTabRulesFromGlobal(tabId: number): Promise<RuleContext> {
+    return this.enqueueUpdate(async () => {
+      await this.assertValidTab(tabId);
+      const previousSessions = await this.getTabRuleSessions();
+      const nextSessions = this.cloneSessions(previousSessions);
+      const session = nextSessions[String(tabId)];
+      if (!session) {
+        throw new Error('No private rule draft exists for this tab');
+      }
+
+      session.domains = this.cloneDomains(await this.getGlobalDomains());
+      session.updatedAt = Date.now();
+      await this.commitSessionMutation(previousSessions, nextSessions);
+      return this.getRuleContext(tabId);
+    });
+  }
+
+  async discardTabRuleDraft(tabId: number): Promise<RuleContext> {
+    return this.enqueueUpdate(async () => {
+      await this.assertValidTab(tabId);
+      const previousSessions = await this.getTabRuleSessions();
+      const nextSessions = this.cloneSessions(previousSessions);
+      delete nextSessions[String(tabId)];
+      await this.commitSessionMutation(previousSessions, nextSessions);
+      return this.getRuleContext(tabId);
+    });
+  }
+
+  async getEffectiveRulesForTab(tabId: number): Promise<Domain[]> {
+    const sessions = await this.getTabRuleSessions();
+    const session = sessions[String(tabId)];
+    if (session?.enabled) {
+      return this.cloneDomains(session.domains);
+    }
+    return this.cloneDomains(await this.getGlobalDomains());
+  }
+
+  async updateRules(): Promise<void> {
+    await this.enqueueUpdate(() => this.rebuildRulesNow());
+  }
+
+  async updateTabRules(_tabId: number, _url: string): Promise<void> {
+    // Rules are scoped by stable tabId. Navigation does not require rebuilding.
+  }
+
+  async cleanupTabRules(tabId: number): Promise<void> {
+    await this.enqueueUpdate(async () => {
+      const sessions = await this.getTabRuleSessions();
+      const session = sessions[String(tabId)];
+      if (!session) return;
+
+      delete sessions[String(tabId)];
+      await this.setTabRuleSessions(sessions);
+      if (session.enabled) {
+        await this.rebuildRulesNow();
+      }
+      console.log(`🧹 Removed private rule session for tab ${tabId}`);
+    });
+  }
+
+  async getRuleStats(): Promise<RuleStats> {
+    try {
+      const [dynamicRules, sessionRules, sessions] = await Promise.all([
+        chrome.declarativeNetRequest.getDynamicRules(),
+        chrome.declarativeNetRequest.getSessionRules(),
+        this.getTabRuleSessions()
+      ]);
+      const values = Object.values(sessions);
+      return {
+        dynamicRules: dynamicRules.length,
+        sessionRules: sessionRules.length,
+        activePrivateTabs: values.filter(session => session.enabled).length,
+        privateDraftTabs: values.length
+      };
     } catch (error) {
       Utils.simpleError(error);
+      return {
+        dynamicRules: 0,
+        sessionRules: 0,
+        activePrivateTabs: 0,
+        privateDraftTabs: 0
+      };
     }
+  }
+
+  private async commitSessionMutation(
+    previousSessions: TabRuleSessionMap,
+    nextSessions: TabRuleSessionMap
+  ): Promise<void> {
+    try {
+      await this.setTabRuleSessions(nextSessions);
+      await this.rebuildRulesNow();
+    } catch (error) {
+      await this.setTabRuleSessions(previousSessions);
+      await this.rebuildRulesNow();
+      throw error;
+    }
+  }
+
+  private async rebuildRulesNow(): Promise<void> {
+    const globalDomains = await this.getGlobalDomains();
+    const sessions = await this.getTabRuleSessions();
+    const activeEntries = Object.entries(sessions)
+      .filter(([, session]) => session.enabled)
+      .map(([tabId, session]) => [Number(tabId), session] as const);
+    const activeTabIds = activeEntries.map(([tabId]) => tabId);
+
+    this.ruleIdCounter = FIRST_RULE_ID;
+    const dynamicRules: chrome.declarativeNetRequest.Rule[] = [];
+    const sessionRules: chrome.declarativeNetRequest.Rule[] = [];
+
+    if (activeTabIds.length === 0) {
+      dynamicRules.push(...this.convertDomains(globalDomains));
+    } else {
+      sessionRules.push(...this.convertDomains(globalDomains, {
+        excludedTabIds: activeTabIds
+      }));
+      activeEntries.forEach(([tabId, session]) => {
+        sessionRules.push(...this.convertDomains(session.domains, {
+          tabIds: [tabId]
+        }));
+      });
+    }
+
+    this.validateRuleLimits(dynamicRules, sessionRules);
+    await this.replaceBrowserRules(dynamicRules, sessionRules);
+    console.log(
+      `✅ Rules rebuilt: ${dynamicRules.length} dynamic, ${sessionRules.length} session, ${activeTabIds.length} private tabs`
+    );
+  }
+
+  private convertDomains(
+    domains: Domain[],
+    scope: RuleScopeCondition = {}
+  ): chrome.declarativeNetRequest.Rule[] {
+    const result: chrome.declarativeNetRequest.Rule[] = [];
+    domains.forEach(domain => {
+      if (!domain.on) return;
+      domain.rules?.forEach(rule => {
+        if (!rule.on || !this.canConvertToDeclarative(rule)) return;
+        const declarativeRule = this.convertToDeclarativeRule(rule, domain, scope);
+        if (declarativeRule) result.push(declarativeRule);
+      });
+    });
+    return result;
   }
 
   private canConvertToDeclarative(rule: Rule): boolean {
-    // Some rule types can be converted to declarative net request rules
-    const supportedTypes = ['urlRedirect', 'fileOverride', 'headerModification'];
-    return supportedTypes.includes(rule.type);
+    return ['urlRedirect', 'fileOverride', 'headerModification'].includes(rule.type);
   }
 
-  private convertToDeclarativeRule(rule: Rule, domain: Domain): chrome.declarativeNetRequest.Rule | null {
+  private convertToDeclarativeRule(
+    rule: Rule,
+    _domain: Domain,
+    scope: RuleScopeCondition = {}
+  ): chrome.declarativeNetRequest.Rule | null {
     try {
-      const ruleId = this.generateUniqueRuleId();
       const condition = this.buildCondition(rule.from);
       const baseRule: Partial<chrome.declarativeNetRequest.Rule> = {
-        id: ruleId,
+        id: this.ruleIdCounter++,
         priority: 1,
         condition: {
           ...condition,
+          ...scope,
           resourceTypes: [
             chrome.declarativeNetRequest.ResourceType.MAIN_FRAME,
             chrome.declarativeNetRequest.ResourceType.SUB_FRAME,
@@ -137,81 +311,52 @@ export class RuleManager {
         }
       };
 
-      switch (rule.type) {
-        case 'urlRedirect':
-          if (rule.to) {
-            const redirect = this.isRegexPattern(rule.from)
-              ? { regexSubstitution: this.convertRegexSubstitution(rule.to) }
-              : { url: rule.to };
-
-            return {
-              ...baseRule,
-              action: {
-                type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
-                redirect
-              }
-            } as chrome.declarativeNetRequest.Rule;
+      if (rule.type === 'urlRedirect' && rule.to) {
+        const redirect = this.isRegexPattern(rule.from)
+          ? { regexSubstitution: this.convertRegexSubstitution(rule.to) }
+          : { url: rule.to };
+        return {
+          ...baseRule,
+          action: {
+            type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
+            redirect
           }
-          break;
-
-        case 'fileOverride':
-          if (rule.file) {
-            // For file override, we'll use a data URL
-            const mimeType = this.getMimeType(rule.fileType);
-            const dataUrl = `data:${mimeType};base64,${btoa(rule.file)}`;
-            
-            return {
-              ...baseRule,
-              action: {
-                type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
-                redirect: { url: dataUrl }
-              }
-            } as chrome.declarativeNetRequest.Rule;
-          }
-          break;
-
-        case 'headerModification':
-          if (rule.headers) {
-            const requestHeaders: chrome.declarativeNetRequest.ModifyHeaderInfo[] = [];
-            const responseHeaders: chrome.declarativeNetRequest.ModifyHeaderInfo[] = [];
-            
-            rule.headers.forEach(header => {
-              const headerRule: chrome.declarativeNetRequest.ModifyHeaderInfo = {
-                header: header.name,
-                operation: header.operation === 'remove' 
-                  ? chrome.declarativeNetRequest.HeaderOperation.REMOVE 
-                  : chrome.declarativeNetRequest.HeaderOperation.SET,
-                value: header.operation !== 'remove' ? header.value : undefined
-              };
-              
-              // Determine if it's a request or response header
-              if (this.isRequestHeader(header.name)) {
-                requestHeaders.push(headerRule);
-              } else {
-                responseHeaders.push(headerRule);
-              }
-            });
-            
-            const action: chrome.declarativeNetRequest.RuleAction = {
-              type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS
-            };
-            
-            if (requestHeaders.length > 0) {
-              action.requestHeaders = requestHeaders;
-            }
-            
-            if (responseHeaders.length > 0) {
-              action.responseHeaders = responseHeaders;
-            }
-            
-            return {
-              ...baseRule,
-              action
-            } as chrome.declarativeNetRequest.Rule;
-          }
-          break;
+        } as chrome.declarativeNetRequest.Rule;
       }
-      
+
+      if (rule.type === 'fileOverride' && rule.file) {
+        const dataUrl = `data:${this.getMimeType(rule.fileType)};base64,${btoa(rule.file)}`;
+        return {
+          ...baseRule,
+          action: {
+            type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
+            redirect: { url: dataUrl }
+          }
+        } as chrome.declarativeNetRequest.Rule;
+      }
+
+      if (rule.type === 'headerModification' && rule.headers) {
+        const requestHeaders: chrome.declarativeNetRequest.ModifyHeaderInfo[] = [];
+        const responseHeaders: chrome.declarativeNetRequest.ModifyHeaderInfo[] = [];
+        rule.headers.forEach(header => {
+          const headerRule: chrome.declarativeNetRequest.ModifyHeaderInfo = {
+            header: header.name,
+            operation: header.operation === 'remove'
+              ? chrome.declarativeNetRequest.HeaderOperation.REMOVE
+              : chrome.declarativeNetRequest.HeaderOperation.SET,
+            value: header.operation !== 'remove' ? header.value : undefined
+          };
+          if (this.isRequestHeader(header.name)) requestHeaders.push(headerRule);
+          else responseHeaders.push(headerRule);
+        });
+        const action: chrome.declarativeNetRequest.RuleAction = {
+          type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS
+        };
+        if (requestHeaders.length) action.requestHeaders = requestHeaders;
+        if (responseHeaders.length) action.responseHeaders = responseHeaders;
+        return { ...baseRule, action } as chrome.declarativeNetRequest.Rule;
+      }
+
       return null;
     } catch (error) {
       Utils.simpleError(error);
@@ -219,26 +364,82 @@ export class RuleManager {
     }
   }
 
-  private buildCondition(pattern: string): chrome.declarativeNetRequest.RuleCondition {
-    if (this.isRegexPattern(pattern)) {
-      return {
-        regexFilter: this.stripRegexDelimiters(pattern)
-      };
+  private validateRuleLimits(
+    dynamicRules: chrome.declarativeNetRequest.Rule[],
+    sessionRules: chrome.declarativeNetRequest.Rule[]
+  ): void {
+    const allRules = [...dynamicRules, ...sessionRules];
+    if (allRules.length > chrome.declarativeNetRequest.MAX_NUMBER_OF_DYNAMIC_AND_SESSION_RULES) {
+      throw new Error('规则数量超过 Chrome dynamic/session rules 上限');
     }
-
-    return {
-      urlFilter: this.convertUrlFilterPattern(pattern)
-    };
+    const regexRuleCount = allRules.filter(rule => Boolean(rule.condition.regexFilter)).length;
+    if (regexRuleCount > chrome.declarativeNetRequest.MAX_NUMBER_OF_REGEX_RULES) {
+      throw new Error('正则规则数量超过 Chrome 上限');
+    }
   }
 
-  private convertUrlFilterPattern(pattern: string): string {
-    // Convert our pattern format to declarative net request urlFilter
-    if (pattern.includes('*')) {
-      return pattern;
-    } else {
-      // Exact match or contains
-      return `*${pattern}*`;
+  private async replaceBrowserRules(
+    dynamicRules: chrome.declarativeNetRequest.Rule[],
+    sessionRules: chrome.declarativeNetRequest.Rule[]
+  ): Promise<void> {
+    const [oldDynamicRules, oldSessionRules] = await Promise.all([
+      chrome.declarativeNetRequest.getDynamicRules(),
+      chrome.declarativeNetRequest.getSessionRules()
+    ]);
+
+    try {
+      await this.clearBrowserRules(oldDynamicRules, oldSessionRules);
+      if (dynamicRules.length) {
+        await chrome.declarativeNetRequest.updateDynamicRules({ addRules: dynamicRules });
+      }
+      if (sessionRules.length) {
+        await chrome.declarativeNetRequest.updateSessionRules({ addRules: sessionRules });
+      }
+    } catch (error) {
+      console.error('❌ Failed to replace DNR rules, restoring previous rules:', error);
+      await this.restoreBrowserRules(oldDynamicRules, oldSessionRules);
+      throw error;
     }
+  }
+
+  private async clearBrowserRules(
+    dynamicRules: chrome.declarativeNetRequest.Rule[],
+    sessionRules: chrome.declarativeNetRequest.Rule[]
+  ): Promise<void> {
+    if (dynamicRules.length) {
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: dynamicRules.map(rule => rule.id)
+      });
+    }
+    if (sessionRules.length) {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: sessionRules.map(rule => rule.id)
+      });
+    }
+  }
+
+  private async restoreBrowserRules(
+    dynamicRules: chrome.declarativeNetRequest.Rule[],
+    sessionRules: chrome.declarativeNetRequest.Rule[]
+  ): Promise<void> {
+    const [currentDynamicRules, currentSessionRules] = await Promise.all([
+      chrome.declarativeNetRequest.getDynamicRules(),
+      chrome.declarativeNetRequest.getSessionRules()
+    ]);
+    await this.clearBrowserRules(currentDynamicRules, currentSessionRules);
+    if (dynamicRules.length) {
+      await chrome.declarativeNetRequest.updateDynamicRules({ addRules: dynamicRules });
+    }
+    if (sessionRules.length) {
+      await chrome.declarativeNetRequest.updateSessionRules({ addRules: sessionRules });
+    }
+  }
+
+  private buildCondition(pattern: string): chrome.declarativeNetRequest.RuleCondition {
+    if (this.isRegexPattern(pattern)) {
+      return { regexFilter: this.stripRegexDelimiters(pattern) };
+    }
+    return { urlFilter: pattern.includes('*') ? pattern : `*${pattern}*` };
   }
 
   private isRegexPattern(pattern: string): boolean {
@@ -254,116 +455,71 @@ export class RuleManager {
   }
 
   private getMimeType(fileType?: string): string {
-    const mimeTypes: Record<string, string> = {
-      'js': 'application/javascript',
-      'css': 'text/css',
-      'html': 'text/html',
-      'json': 'application/json',
-      'xml': 'application/xml'
-    };
-    
-    return mimeTypes[fileType || ''] || 'text/plain';
+    return {
+      js: 'application/javascript',
+      css: 'text/css',
+      html: 'text/html',
+      json: 'application/json',
+      xml: 'application/xml'
+    }[fileType || ''] || 'text/plain';
   }
 
   private isRequestHeader(headerName: string): boolean {
-    const requestHeaders = [
+    return [
       'accept', 'accept-encoding', 'accept-language', 'authorization',
       'cache-control', 'content-type', 'cookie', 'origin', 'referer',
       'user-agent', 'x-requested-with'
-    ];
-    
-    return requestHeaders.includes(headerName.toLowerCase());
+    ].includes(headerName.toLowerCase());
   }
 
-  private async clearAllDynamicRules(): Promise<void> {
-    try {
-      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-      const ruleIds = existingRules.map(rule => rule.id);
-      
-      if (ruleIds.length > 0) {
-        console.log(`🗑️ About to clear ${ruleIds.length} existing rules: [${ruleIds.join(', ')}]`);
-        
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          removeRuleIds: ruleIds
-        });
-        
-        // 清除已使用ID跟踪
-        ruleIds.forEach(id => {
-          this.usedRuleIds.delete(id);
-        });
-        
-        console.log(`✅ Successfully cleared ${ruleIds.length} existing rules and updated ID tracking`);
-        
-        // 验证清除是否成功
-        const verifyRules = await chrome.declarativeNetRequest.getDynamicRules();
-        if (verifyRules.length > 0) {
-          console.warn(`⚠️ Warning: ${verifyRules.length} rules still remain after clear!`);
-          verifyRules.forEach(rule => {
-            console.warn(`  🔍 Remaining rule ID: ${rule.id}, type: ${rule.action.type}`);
-          });
-        }
-      } else {
-        console.log(`🗑️ No existing rules to clear`);
+  private async getGlobalDomains(): Promise<Domain[]> {
+    const storage = await this.storageManager.forceRefresh();
+    return storage.domains || [];
+  }
+
+  private async getTabRuleSessions(): Promise<TabRuleSessionMap> {
+    const result = await chrome.storage.session.get(TAB_RULE_SESSIONS_KEY);
+    return (result[TAB_RULE_SESSIONS_KEY] || {}) as TabRuleSessionMap;
+  }
+
+  private async setTabRuleSessions(sessions: TabRuleSessionMap): Promise<void> {
+    await chrome.storage.session.set({ [TAB_RULE_SESSIONS_KEY]: sessions });
+  }
+
+  private async pruneClosedTabSessions(): Promise<void> {
+    const sessions = await this.getTabRuleSessions();
+    const tabs = await chrome.tabs.query({});
+    const openTabIds = new Set(
+      tabs.map(tab => tab.id).filter((tabId): tabId is number => tabId !== undefined)
+    );
+    let changed = false;
+    Object.keys(sessions).forEach(key => {
+      if (!openTabIds.has(Number(key))) {
+        delete sessions[key];
+        changed = true;
       }
-      
-      // 重置ID计数器但保持高于任何现有ID
-      this.ruleIdCounter = Math.max(1000, ...Array.from(this.usedRuleIds), 0) + 1;
-      console.log(`🔢 Reset rule ID counter to: ${this.ruleIdCounter}`);
-      
-    } catch (error) {
-      console.error('❌ Failed to clear dynamic rules:', error);
-      Utils.simpleError(error);
+    });
+    if (changed) await this.setTabRuleSessions(sessions);
+  }
+
+  private async assertValidTab(tabId: number): Promise<void> {
+    if (!Number.isInteger(tabId) || tabId < 0) {
+      throw new Error('Invalid tabId');
     }
+    await chrome.tabs.get(tabId);
   }
 
-  async updateRules(): Promise<void> {
-    console.log('🔄 Updating rules...');
-    
-    try {
-      // 重新加载规则
-      await this.loadRules();
-      
-      // 验证规则确实被更新了
-      const finalRules = await chrome.declarativeNetRequest.getDynamicRules();
-      console.log(`✅ Rules updated successfully: ${finalRules.length} rules now active`);
-      
-    } catch (error) {
-      console.error('❌ Failed to update rules:', error);
-      throw error;
-    }
+  private cloneDomains(domains: Domain[]): Domain[] {
+    return structuredClone(domains);
   }
 
-  async updateTabRules(tabId: number, url: string): Promise<void> {
-    // Handle tab-specific rule updates
-    console.log(`🏷️ Updating rules for tab ${tabId}: ${url}`);
-    
-    // Store tab URL for rule matching
-    this.tabRules.set(tabId, { url, timestamp: Date.now() });
+  private cloneSessions(sessions: TabRuleSessionMap): TabRuleSessionMap {
+    return structuredClone(sessions);
   }
 
-  async cleanupTabRules(tabId: number): Promise<void> {
-    // Clean up rules for closed tabs
-    this.tabRules.delete(tabId);
-    console.log(`🧹 Cleaned up rules for tab ${tabId}`);
+  private enqueueUpdate<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.updateQueue.then(task, task);
+    this.updateQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
-
-  /**
-   * Get current rule statistics
-   */
-  async getRuleStats(): Promise<RuleStats> {
-    try {
-      const dynamicRules = await chrome.declarativeNetRequest.getDynamicRules();
-      const staticRules = await chrome.declarativeNetRequest.getEnabledRulesets();
-      
-      return {
-        dynamicRules: dynamicRules.length,
-        staticRules: staticRules.length,
-        tabRules: this.tabRules.size
-      };
-    } catch (error) {
-      Utils.simpleError(error);
-      return { dynamicRules: 0, staticRules: 0, tabRules: 0 };
-    }
-  }
-} 
- 
+}

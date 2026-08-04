@@ -27,11 +27,13 @@ if (typeof window !== 'undefined') {
 // 只负责创建DevTools面板
 if (chrome && chrome.devtools && chrome.devtools.panels) {
     console.log('✅ DevTools API available');
+    const inspectedTabId = chrome.devtools.inspectedWindow.tabId;
+    const panelPage = `src/ui/options.html?source=devtools&tabId=${inspectedTabId}`;
     
     chrome.devtools.panels.create(
         'Resource Override',
         'icons/icon-16x16.png',
-        'src/ui/options.html',
+        panelPage,
         function(panel) {
             console.log('🎯 DevTools panel created successfully');
             

@@ -58,16 +58,43 @@ interface Domain {
   description?: string;
 }
 
+type RuleSource = 'global' | 'tab';
+
+interface RuleContext {
+  tabId?: number;
+  source: RuleSource;
+  privateRulesEnabled: boolean;
+  hasPrivateDraft: boolean;
+  domains: Domain[];
+}
+
+interface RuleStats {
+  dynamicRules: number;
+  sessionRules: number;
+  activePrivateTabs: number;
+  privateDraftTabs: number;
+}
+
+const pageParams = new URLSearchParams(window.location.search);
+const parsedTabId = Number(pageParams.get('tabId'));
+const isDevToolsContext = pageParams.get('source') === 'devtools' && Number.isInteger(parsedTabId);
+const inspectedTabId = isDevToolsContext ? parsedTabId : undefined;
+
 const OptionsApp: React.FC = () => {
   const [showLogs, setShowLogs] = useState<boolean>(false);
   const [version, setVersion] = useState<string>('');
   const [installDate, setInstallDate] = useState<string>('');
   const [updateDate, setUpdateDate] = useState<string>('');
-  const [ruleStats, setRuleStats] = useState<{
-    dynamicRules: number;
-    staticRules: number;
-    tabRules: number;
-  }>({ dynamicRules: 0, staticRules: 0, tabRules: 0 });
+  const [ruleStats, setRuleStats] = useState<RuleStats>({
+    dynamicRules: 0,
+    sessionRules: 0,
+    activePrivateTabs: 0,
+    privateDraftTabs: 0
+  });
+  const [ruleSource, setRuleSource] = useState<RuleSource>('global');
+  const [privateRulesEnabled, setPrivateRulesEnabled] = useState(false);
+  const [hasPrivateDraft, setHasPrivateDraft] = useState(false);
+  const [scopeChanging, setScopeChanging] = useState(false);
   
   // 规则管理状态
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -85,8 +112,15 @@ const OptionsApp: React.FC = () => {
   useEffect(() => {
     loadSettings();
     loadRuleStats();
-    loadDomains();
+    loadRuleContext();
   }, []);
+
+  const applyRuleContext = (context: RuleContext): void => {
+    setRuleSource(context.source);
+    setPrivateRulesEnabled(context.privateRulesEnabled);
+    setHasPrivateDraft(context.hasPrivateDraft);
+    setDomains(context.domains || []);
+  };
 
   const loadSettings = async (): Promise<void> => {
     try {
@@ -150,6 +184,7 @@ const OptionsApp: React.FC = () => {
       const exportData = {
         version: '1.3.2',
         exportTime: new Date().toISOString(),
+        source: ruleSource,
         domains: domains
       };
       
@@ -194,7 +229,7 @@ const OptionsApp: React.FC = () => {
         // 显示确认对话框
         Modal.confirm({
           title: '确认导入规则',
-          content: `确定要导入 ${importData.domains.length} 个域名的规则吗？这将覆盖现有的所有规则。`,
+          content: `确定要导入 ${importData.domains.length} 个域名的规则吗？这将覆盖当前${ruleSource === 'tab' ? '标签页私有' : '全局'}规则。`,
           okText: '导入',
           cancelText: '取消',
           onOk: async () => {
@@ -210,7 +245,6 @@ const OptionsApp: React.FC = () => {
               }));
               
               await saveDomains(processedDomains);
-              setDomains(processedDomains);
               message.success('规则导入成功');
             } catch (error) {
               console.error('Import save failed:', error);
@@ -227,13 +261,19 @@ const OptionsApp: React.FC = () => {
   };
 
   // 域名和规则管理函数
-  const loadDomains = async (): Promise<void> => {
+  const loadRuleContext = async (): Promise<void> => {
     setLoading(true);
     try {
-      const result = await chrome.storage.local.get(['domains']);
-      setDomains(result.domains || []);
+      const response = await chrome.runtime.sendMessage({
+        action: 'getRuleContext',
+        tabId: inspectedTabId
+      });
+      if (!response?.success) {
+        throw new Error(response?.error || 'Failed to load rule context');
+      }
+      applyRuleContext(response.data);
     } catch (error) {
-      console.error('Failed to load domains:', error);
+      console.error('Failed to load rule context:', error);
       message.error('加载域名失败');
     } finally {
       setLoading(false);
@@ -242,12 +282,118 @@ const OptionsApp: React.FC = () => {
 
   const saveDomains = async (newDomains: Domain[]): Promise<void> => {
     try {
-      await chrome.storage.local.set({ domains: newDomains });
-      setDomains(newDomains);
-      message.success('保存成功');
+      const response = await chrome.runtime.sendMessage({
+        action: 'saveRuleContext',
+        source: ruleSource,
+        tabId: inspectedTabId,
+        domains: newDomains
+      });
+      if (!response?.success) {
+        throw new Error(response?.error || 'Failed to save rules');
+      }
+      applyRuleContext(response.data);
+      await loadRuleStats();
+      message.success('保存成功，刷新页面后完整生效');
     } catch (error) {
       console.error('Failed to save domains:', error);
       message.error('保存失败');
+      throw error;
+    }
+  };
+
+  const changePrivateRulesEnabled = async (enabled: boolean): Promise<void> => {
+    if (inspectedTabId === undefined) return;
+
+    const execute = async (): Promise<void> => {
+      setScopeChanging(true);
+      try {
+        const response = await chrome.runtime.sendMessage({
+          action: 'setTabRulesEnabled',
+          tabId: inspectedTabId,
+          enabled
+        });
+        if (!response?.success) {
+          throw new Error(response?.error || 'Failed to change rule scope');
+        }
+        setModalVisible(false);
+        setRuleModalVisible(false);
+        form.resetFields();
+        ruleForm.resetFields();
+        applyRuleContext(response.data);
+        await loadRuleStats();
+        message.success(enabled
+          ? '已启用当前标签页独立规则'
+          : '已恢复使用最新全局规则，私有规则草稿已保留');
+      } catch (error) {
+        console.error('Failed to change private rule state:', error);
+        message.error('切换规则范围失败');
+      } finally {
+        setScopeChanging(false);
+      }
+    };
+
+    if (modalVisible || ruleModalVisible) {
+      Modal.confirm({
+        title: '确认切换规则范围',
+        content: '当前编辑窗口中的未保存内容将被丢弃，是否继续？',
+        okText: '继续切换',
+        cancelText: '取消',
+        onOk: execute
+      });
+      return;
+    }
+
+    await execute();
+  };
+
+  const resetPrivateRules = async (): Promise<void> => {
+    if (inspectedTabId === undefined) return;
+    setScopeChanging(true);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'resetTabRulesFromGlobal',
+        tabId: inspectedTabId
+      });
+      if (!response?.success) throw new Error(response?.error || 'Reset failed');
+      applyRuleContext(response.data);
+      await loadRuleStats();
+      message.success('已重置为最新全局规则，刷新页面后完整生效');
+    } catch (error) {
+      console.error('Failed to reset private rules:', error);
+      message.error('重置私有规则失败');
+    } finally {
+      setScopeChanging(false);
+    }
+  };
+
+  const discardPrivateDraft = async (): Promise<void> => {
+    if (inspectedTabId === undefined) return;
+    setScopeChanging(true);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'discardTabRuleDraft',
+        tabId: inspectedTabId
+      });
+      if (!response?.success) throw new Error(response?.error || 'Discard failed');
+      applyRuleContext(response.data);
+      await loadRuleStats();
+      message.success('已丢弃当前标签页的私有规则草稿');
+    } catch (error) {
+      console.error('Failed to discard private draft:', error);
+      message.error('丢弃私有草稿失败');
+    } finally {
+      setScopeChanging(false);
+    }
+  };
+
+  const refreshInspectedTab = async (): Promise<void> => {
+    if (inspectedTabId === undefined) return;
+    try {
+      await chrome.tabs.reload(inspectedTabId);
+      message.success('当前页面已刷新');
+    } catch (error) {
+      console.error('Failed to reload inspected tab:', error);
+      message.error('刷新当前页面失败');
     }
   };
 
@@ -602,14 +748,24 @@ const OptionsApp: React.FC = () => {
           <Tabs defaultActiveKey="rules" type="card">
             <TabPane tab="规则管理" key="rules">
               <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => openDomainModal()}
-                >
-                  添加域名
-                </Button>
                 <Space>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => openDomainModal()}
+                  >
+                    添加域名
+                  </Button>
+                  <Tag color={ruleSource === 'tab' ? 'purple' : 'blue'}>
+                    当前正在编辑：{ruleSource === 'tab' ? '此标签页的独立规则' : '全局规则'}
+                  </Tag>
+                </Space>
+                <Space>
+                  {isDevToolsContext && (
+                    <Button onClick={refreshInspectedTab}>
+                      刷新当前页面
+                    </Button>
+                  )}
                   <Button
                     icon={<UploadOutlined />}
                     onClick={handleImportRules}
@@ -651,24 +807,82 @@ const OptionsApp: React.FC = () => {
             <TabPane tab="基本设置" key="settings">
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Card title="功能设置" size="small">
-                  <Row justify="space-between" align="middle">
-                    <Col>
-                      <Space direction="vertical" size={0}>
-                        <Text strong>显示调试日志</Text>
-                        <Text type="secondary" style={{ fontSize: '12px' }}>
-                          在页面控制台中显示扩展的调试信息
-                        </Text>
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <Row justify="space-between" align="middle">
+                      <Col>
+                        <Space direction="vertical" size={0}>
+                          <Text strong>当前标签页使用独立规则</Text>
+                          <Text type="secondary">
+                            开启后，当前标签页将使用独立规则副本，规则编辑不会影响其他标签页。关闭后，当前标签页会立即恢复使用最新全局规则，私有规则将作为会话草稿保留，再次开启时可继续使用；关闭标签页或浏览器后草稿会被清除。
+                          </Text>
+                          {!isDevToolsContext ? (
+                            <Text type="warning">
+                              请从目标页面的 DevTools → Resource Override 面板管理当前标签页的独立规则。
+                            </Text>
+                          ) : privateRulesEnabled ? (
+                            <Text type="success">
+                              当前标签页正在使用独立规则，其他标签页不会受到这里的规则编辑影响。
+                            </Text>
+                          ) : hasPrivateDraft ? (
+                            <Text type="warning">
+                              当前标签页正在使用全局规则；已保留一份私有规则草稿，再次开启可恢复。
+                            </Text>
+                          ) : (
+                            <Text type="secondary">当前标签页正在使用全局规则。</Text>
+                          )}
+                        </Space>
+                      </Col>
+                      <Col>
+                        <Switch
+                          checked={privateRulesEnabled}
+                          disabled={!isDevToolsContext || scopeChanging}
+                          loading={scopeChanging}
+                          onChange={changePrivateRulesEnabled}
+                          checkedChildren="开启"
+                          unCheckedChildren="关闭"
+                        />
+                      </Col>
+                    </Row>
+                    {isDevToolsContext && (privateRulesEnabled || hasPrivateDraft) && (
+                      <Space wrap>
+                        {privateRulesEnabled && (
+                          <Popconfirm
+                            title="确定重置私有规则？"
+                            description="当前标签页的私有规则将被最新全局规则覆盖。"
+                            onConfirm={resetPrivateRules}
+                          >
+                            <Button disabled={scopeChanging}>重置为最新全局规则</Button>
+                          </Popconfirm>
+                        )}
+                        {hasPrivateDraft && (
+                          <Popconfirm
+                            title="确定丢弃私有草稿？"
+                            description="此操作无法撤销，当前标签页将使用全局规则。"
+                            onConfirm={discardPrivateDraft}
+                          >
+                            <Button danger disabled={scopeChanging}>丢弃私有草稿</Button>
+                          </Popconfirm>
+                        )}
                       </Space>
-                    </Col>
-                    <Col>
-                      <Switch
-                        checked={showLogs}
-                        onChange={handleLogsChange}
-                        checkedChildren="开启"
-                        unCheckedChildren="关闭"
-                      />
-                    </Col>
-                  </Row>
+                    )}
+                    <Divider style={{ margin: 0 }} />
+                    <Row justify="space-between" align="middle">
+                      <Col>
+                        <Space direction="vertical" size={0}>
+                          <Text strong>显示调试日志</Text>
+                          <Text type="secondary">在页面控制台中显示扩展的调试信息</Text>
+                        </Space>
+                      </Col>
+                      <Col>
+                        <Switch
+                          checked={showLogs}
+                          onChange={handleLogsChange}
+                          checkedChildren="开启"
+                          unCheckedChildren="关闭"
+                        />
+                      </Col>
+                    </Row>
+                  </Space>
                 </Card>
 
                 <Card title="系统操作" size="small">
@@ -693,7 +907,7 @@ const OptionsApp: React.FC = () => {
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Card title="规则统计" size="small">
                   <Row gutter={16}>
-                    <Col span={8}>
+                    <Col span={6}>
                       <div style={{ textAlign: 'center' }}>
                         <Title level={3} style={{ margin: 0, color: '#1890ff' }}>
                           {ruleStats.dynamicRules}
@@ -701,20 +915,28 @@ const OptionsApp: React.FC = () => {
                         <Text type="secondary">动态规则</Text>
                       </div>
                     </Col>
-                    <Col span={8}>
+                    <Col span={6}>
                       <div style={{ textAlign: 'center' }}>
                         <Title level={3} style={{ margin: 0, color: '#52c41a' }}>
-                          {ruleStats.staticRules}
+                          {ruleStats.sessionRules}
                         </Title>
-                        <Text type="secondary">静态规则</Text>
+                        <Text type="secondary">Session规则</Text>
                       </div>
                     </Col>
-                    <Col span={8}>
+                    <Col span={6}>
                       <div style={{ textAlign: 'center' }}>
                         <Title level={3} style={{ margin: 0, color: '#faad14' }}>
-                          {ruleStats.tabRules}
+                          {ruleStats.activePrivateTabs}
                         </Title>
-                        <Text type="secondary">标签页规则</Text>
+                        <Text type="secondary">独立规则Tab</Text>
+                      </div>
+                    </Col>
+                    <Col span={6}>
+                      <div style={{ textAlign: 'center' }}>
+                        <Title level={3} style={{ margin: 0, color: '#722ed1' }}>
+                          {ruleStats.privateDraftTabs}
+                        </Title>
+                        <Text type="secondary">私有草稿Tab</Text>
                       </div>
                     </Col>
                   </Row>
