@@ -314,6 +314,13 @@ class ExtensionServiceWorker {
           break;
         }
 
+        case 'overwriteGlobalRulesFromTab': {
+          const context = await this.ruleManager.overwriteGlobalRulesFromTab(message.tabId);
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
         case 'discardTabRuleDraft': {
           const context = await this.ruleManager.discardTabRuleDraft(message.tabId);
           await this.forceRefreshCaches();

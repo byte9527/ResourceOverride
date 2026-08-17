@@ -366,6 +366,26 @@ const OptionsApp: React.FC = () => {
     }
   };
 
+  const overwriteGlobalRules = async (): Promise<void> => {
+    if (inspectedTabId === undefined) return;
+    setScopeChanging(true);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'overwriteGlobalRulesFromTab',
+        tabId: inspectedTabId
+      });
+      if (!response?.success) throw new Error(response?.error || 'Overwrite failed');
+      applyRuleContext(response.data);
+      await loadRuleStats();
+      message.success('已用当前标签页的独立规则覆盖全局规则，刷新其他页面后完整生效');
+    } catch (error) {
+      console.error('Failed to overwrite global rules:', error);
+      message.error('覆盖全局规则失败');
+    } finally {
+      setScopeChanging(false);
+    }
+  };
+
   const discardPrivateDraft = async (): Promise<void> => {
     if (inspectedTabId === undefined) return;
     setScopeChanging(true);
@@ -845,6 +865,23 @@ const OptionsApp: React.FC = () => {
                     </Row>
                     {isDevToolsContext && (privateRulesEnabled || hasPrivateDraft) && (
                       <Space wrap>
+                        {privateRulesEnabled && (
+                          <Popconfirm
+                            title="确定覆盖全局规则？"
+                            description="全局规则将被当前标签页的独立规则覆盖，并影响所有使用全局规则的标签页。当前标签页仍会保持独立规则模式。"
+                            okText="确认覆盖"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={overwriteGlobalRules}
+                          >
+                            <Button
+                              icon={<GlobalOutlined />}
+                              disabled={scopeChanging}
+                            >
+                              覆盖为全局规则
+                            </Button>
+                          </Popconfirm>
+                        )}
                         {privateRulesEnabled && (
                           <Popconfirm
                             title="确定重置私有规则？"

@@ -153,6 +153,32 @@ export class RuleManager {
     });
   }
 
+  async overwriteGlobalRulesFromTab(tabId: number): Promise<RuleContext> {
+    return this.enqueueUpdate(async () => {
+      await this.assertValidTab(tabId);
+      const sessions = await this.getTabRuleSessions();
+      const session = sessions[String(tabId)];
+      if (!session?.enabled) {
+        throw new Error('The current tab is not using private rules');
+      }
+
+      const previousDomains = this.cloneDomains(await this.getGlobalDomains());
+      const nextDomains = this.cloneDomains(session.domains);
+      try {
+        await this.storageManager.set({ domains: nextDomains });
+        this.storageManager.clearCache();
+        await this.rebuildRulesNow();
+      } catch (error) {
+        await this.storageManager.set({ domains: previousDomains });
+        this.storageManager.clearCache();
+        await this.rebuildRulesNow();
+        throw error;
+      }
+
+      return this.getRuleContext(tabId);
+    });
+  }
+
   async discardTabRuleDraft(tabId: number): Promise<RuleContext> {
     return this.enqueueUpdate(async () => {
       await this.assertValidTab(tabId);

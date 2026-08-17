@@ -140,6 +140,50 @@ test('disabling private rules keeps the tab draft and restores it on enable', as
   assert.equal(sessionData['12'].domains[0].description, 'private edit');
 });
 
+test('overwriting global rules copies the active tab rules and keeps the tab private', async () => {
+  const globalDomain: Domain = {
+    ...domain,
+    description: 'global rules'
+  };
+  const privateDomain: Domain = {
+    ...domain,
+    description: 'private rules'
+  };
+  let storedDomains = [structuredClone(globalDomain)];
+  let sessionData: Record<string, any> = {
+    '12': {
+      enabled: true,
+      domains: [structuredClone(privateDomain)],
+      createdAt: 1,
+      updatedAt: 1
+    }
+  };
+  (globalThis as any).chrome.storage.session.get = async () => ({
+    tabRuleSessions: sessionData
+  });
+  (globalThis as any).chrome.storage.session.set = async (items: Record<string, any>) => {
+    sessionData = structuredClone(items.tabRuleSessions);
+  };
+
+  const manager = new RuleManager() as any;
+  manager.storageManager = {
+    forceRefresh: async () => ({ domains: structuredClone(storedDomains) }),
+    set: async (items: Record<string, any>) => {
+      storedDomains = structuredClone(items.domains);
+    },
+    clearCache: () => undefined
+  };
+  manager.rebuildRulesNow = async () => undefined;
+
+  const context = await manager.overwriteGlobalRulesFromTab(12);
+
+  assert.deepEqual(storedDomains, [privateDomain]);
+  assert.equal(sessionData['12'].enabled, true);
+  assert.deepEqual(sessionData['12'].domains, [privateDomain]);
+  assert.equal(context.source, 'tab');
+  assert.equal(context.privateRulesEnabled, true);
+});
+
 test('rebuild combines excluded global rules with independent per-tab rules', async () => {
   const globalDomain: Domain = {
     ...domain,
