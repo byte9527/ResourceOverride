@@ -40,6 +40,11 @@ class ContentMain {
                 case 'ping':
                     sendResponse({ success: true, timestamp: Date.now() });
                     break;
+
+                case 'rulesUpdated':
+                    // Existing injections cannot be safely undone in-place. The
+                    // DevTools panel offers an explicit page refresh action.
+                    break;
                 
                 default:
                     console.log('❓ Unknown message action:', message.action);
@@ -66,9 +71,15 @@ class ContentMain {
 
     private async checkForInjectionRules(): Promise<void> {
         try {
-            // Get current page rules from storage
-            const result = await chrome.storage.local.get(['domains']);
-            const domains = result.domains || [];
+            // Ask the background for the effective rule context. The background
+            // derives the tabId from sender.tab so page code cannot spoof it.
+            const response = await chrome.runtime.sendMessage({
+                action: 'getEffectiveRulesForTab'
+            });
+            if (!response?.success) {
+                throw new Error(response?.error || 'Failed to resolve effective rules');
+            }
+            const domains = response.data?.domains || [];
             
             // Find matching domains
             const currentUrl = window.location.href;

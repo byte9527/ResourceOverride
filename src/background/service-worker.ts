@@ -143,7 +143,10 @@ class ExtensionServiceWorker {
     }
     
     // Message handling
-    chrome.runtime.onMessage.addListener(this.handleMessage.bind(this));
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      void this.handleMessage(message, sender, sendResponse);
+      return true;
+    });
     
     console.log('🎧 Event listeners registered');
   }
@@ -271,10 +274,68 @@ class ExtensionServiceWorker {
       console.log('📨 Received message:', message.action);
       
       switch (message.action) {
-        case 'getRuleStats':
+        case 'getRuleStats': {
           const stats = await this.ruleManager.getRuleStats();
           sendResponse({ success: true, data: stats });
           break;
+        }
+
+        case 'getRuleContext': {
+          const context = await this.ruleManager.getRuleContext(message.tabId);
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'setTabRulesEnabled': {
+          const context = await this.ruleManager.setTabRulesEnabled(
+            message.tabId,
+            Boolean(message.enabled)
+          );
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'saveRuleContext': {
+          const context = await this.ruleManager.saveRuleContext(
+            message.source,
+            message.domains,
+            message.tabId
+          );
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'resetTabRulesFromGlobal': {
+          const context = await this.ruleManager.resetTabRulesFromGlobal(message.tabId);
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'overwriteGlobalRulesFromTab': {
+          const context = await this.ruleManager.overwriteGlobalRulesFromTab(message.tabId);
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'discardTabRuleDraft': {
+          const context = await this.ruleManager.discardTabRuleDraft(message.tabId);
+          await this.forceRefreshCaches();
+          sendResponse({ success: true, data: context });
+          break;
+        }
+
+        case 'getEffectiveRulesForTab': {
+          if (sender.tab?.id === undefined) {
+            throw new Error('Effective rules can only be requested from a browser tab');
+          }
+          const domains = await this.ruleManager.getEffectiveRulesForTab(sender.tab.id);
+          sendResponse({ success: true, data: { domains } });
+          break;
+        }
           
         case 'clearCache':
           this.storageManager.clearCache();
@@ -296,7 +357,10 @@ class ExtensionServiceWorker {
       }
     } catch (error) {
       console.error('❌ Message handling error:', error);
-      sendResponse({ success: false, error: error.message });
+      sendResponse({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
@@ -341,5 +405,4 @@ if (__DEV__) {
   // Expose to global scope for debugging
   (globalThis as any).extensionServiceWorker = extensionServiceWorker;
   console.log('🔍 Development mode: extensionServiceWorker available globally');
-} 
- 
+}

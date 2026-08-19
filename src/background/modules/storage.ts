@@ -38,6 +38,32 @@ export interface ExtensionStorage {
   [key: string]: any;
 }
 
+export type RuleSource = 'global' | 'tab';
+
+export interface TabRuleSession {
+  enabled: boolean;
+  domains: Domain[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type TabRuleSessionMap = Record<string, TabRuleSession>;
+
+export interface RuleContext {
+  tabId?: number;
+  source: RuleSource;
+  privateRulesEnabled: boolean;
+  hasPrivateDraft: boolean;
+  domains: Domain[];
+}
+
+export interface RuleStats {
+  dynamicRules: number;
+  sessionRules: number;
+  activePrivateTabs: number;
+  privateDraftTabs: number;
+}
+
 /**
  * Storage manager for extension data
  */
@@ -182,5 +208,4 @@ export class StorageManager {
       callback?.();
     });
   }
-} 
- 
+}
